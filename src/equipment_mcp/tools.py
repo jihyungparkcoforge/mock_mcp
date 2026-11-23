@@ -9,7 +9,6 @@ of raising, so the agent can observe the failure and react to it.
 
 from __future__ import annotations
 
-import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any

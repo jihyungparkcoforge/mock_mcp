@@ -16,7 +16,6 @@ Trace mapping (Claude tool use -> ReAct):
 from __future__ import annotations
 
 import asyncio
-import os
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -56,8 +55,10 @@ class AgentResult:
 # ---------------------------------------------------------------------------
 
 def mcp_tool_to_anthropic(tool: Any) -> dict[str, Any]:
-    """Convert an MCP Tool (name, description, input_schema -- snake_case in mcp 2.x) to a Claude tool definition:
-    {"name": ..., "description": ..., "input_schema": ...}. Missing description -> "".
+    """Convert an MCP Tool to a Claude tool definition.
+
+    MCP Tool fields: name, description, input_schema (snake_case in mcp 2.x).
+    Result: {"name": ..., "description": ..., "input_schema": ...}. Missing description -> "".
     """
     pass
 

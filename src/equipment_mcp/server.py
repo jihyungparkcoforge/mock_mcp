@@ -31,19 +31,19 @@ def get_employee_info(
 
 @mcp.tool()
 def get_policy_limits(role: str) -> dict[str, Any]:
-    """Return which items a role is eligible for, the max quantity, and the refresh cycle in years."""
+    """Return which items a role is eligible for, with max quantity and refresh cycle (years)."""
     pass  # TODO
 
 
 @mcp.tool()
 def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
-    """Check whether requesting `item` (e.g. "laptop", "monitor") is within the employee's role policy."""
+    """Check whether requesting `item` (e.g. "laptop") is within the employee's role policy."""
     pass  # TODO
 
 
 @mcp.tool()
 def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[str, Any]:
-    """Escalate an ambiguous or out-of-policy request to a human reviewer. Creates a review ticket."""
+    """Escalate an ambiguous or out-of-policy request to a human reviewer (creates a ticket)."""
     pass  # TODO
 
 
