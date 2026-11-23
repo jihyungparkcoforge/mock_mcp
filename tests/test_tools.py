@@ -20,6 +20,7 @@ NOW = datetime(2026, 11, 23, 10, 0, 0)
 # get_employee_info
 # ---------------------------------------------------------------------------
 
+
 class TestGetEmployeeInfo:
     def test_returns_role_and_profile(self):
         info = get_employee_info("E001", today=TODAY)
@@ -61,6 +62,7 @@ class TestGetEmployeeInfo:
 # get_policy_limits
 # ---------------------------------------------------------------------------
 
+
 class TestGetPolicyLimits:
     def test_standard_policy(self):
         assert get_policy_limits("standard") == {
@@ -100,6 +102,7 @@ class TestGetPolicyLimits:
 # ---------------------------------------------------------------------------
 # check_request_eligibility
 # ---------------------------------------------------------------------------
+
 
 class TestCheckRequestEligibility:
     def test_refresh_due_is_eligible(self):
@@ -186,12 +189,11 @@ class TestCheckRequestEligibility:
 # flag_for_human_review
 # ---------------------------------------------------------------------------
 
+
 class TestFlagForHumanReview:
     def test_returns_ticket(self, tmp_path):
         log = tmp_path / "escalations.jsonl"
-        t = flag_for_human_review(
-            "e003", "4K webcam", "Item not in policy", log_path=log, now=NOW
-        )
+        t = flag_for_human_review("e003", "4K webcam", "Item not in policy", log_path=log, now=NOW)
         assert t == {
             "ticket_id": "ESC-0001",
             "status": "pending_review",
@@ -203,8 +205,7 @@ class TestFlagForHumanReview:
 
     def test_writes_ticket_to_log(self, tmp_path):
         log = tmp_path / "escalations.jsonl"
-        t = flag_for_human_review("E003", "4K webcam", "Item not in policy",
-                                  log_path=log, now=NOW)
+        t = flag_for_human_review("E003", "4K webcam", "Item not in policy", log_path=log, now=NOW)
         lines = log.read_text().splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0]) == t
@@ -212,8 +213,7 @@ class TestFlagForHumanReview:
     def test_ticket_ids_are_sequential_and_appended(self, tmp_path):
         log = tmp_path / "escalations.jsonl"
         flag_for_human_review("E003", "webcam", "not in policy", log_path=log, now=NOW)
-        second = flag_for_human_review("E002", "laptop", "cracked screen",
-                                       log_path=log, now=NOW)
+        second = flag_for_human_review("E002", "laptop", "cracked screen", log_path=log, now=NOW)
         assert second["ticket_id"] == "ESC-0002"
         assert len(log.read_text().splitlines()) == 2
 

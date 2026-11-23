@@ -49,3 +49,15 @@ def test_get_policy_limits_through_server():
 def test_check_request_eligibility_through_server():
     r = _call("check_request_eligibility", {"employee_id": "E003", "item": "webcam"})
     assert r["status"] == "not_in_policy"
+
+
+def test_flag_for_human_review_through_server(tmp_path, monkeypatch):
+    log = tmp_path / "escalations.jsonl"
+    monkeypatch.setattr("equipment_mcp.tools.ESCALATION_LOG_PATH", log)
+    ticket = _call(
+        "flag_for_human_review",
+        {"employee_id": "E003", "request": "4K webcam", "reason": "Item not in policy"},
+    )
+    assert ticket["ticket_id"] == "ESC-0001"
+    assert ticket["status"] == "pending_review"
+    assert len(log.read_text().splitlines()) == 1
