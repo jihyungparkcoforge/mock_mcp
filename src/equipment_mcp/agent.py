@@ -36,16 +36,16 @@ REFLECTION_PROMPT = """TODO: write the reflection instructions.
 
 @dataclass
 class TraceStep:
-    kind: str      # "Thought" | "Action" | "Observation" | "Reflection"
+    kind: str  # "Thought" | "Action" | "Observation" | "Reflection"
     content: str
 
 
 @dataclass
 class AgentResult:
     request: str
-    decision: str                      # one of VALID_DECISIONS
-    response: str                      # final message to the employee
-    ticket_id: str | None = None       # set when decision == "escalate"
+    decision: str  # one of VALID_DECISIONS
+    response: str  # final message to the employee
+    ticket_id: str | None = None  # set when decision == "escalate"
     trace: list[TraceStep] = field(default_factory=list)
     reflection: dict[str, Any] | None = None
 
@@ -53,6 +53,7 @@ class AgentResult:
 # ---------------------------------------------------------------------------
 # Pure helpers (unit tested in tests/test_agent_helpers.py)
 # ---------------------------------------------------------------------------
+
 
 def mcp_tool_to_anthropic(tool: Any) -> dict[str, Any]:
     """Convert an MCP Tool to a Claude tool definition.
@@ -82,13 +83,15 @@ def parse_final_decision(text: str) -> dict[str, Any]:
 # LLM / MCP plumbing
 # ---------------------------------------------------------------------------
 
+
 def make_llm_client():
     """Build an AnthropicFoundry client from the env vars above."""
     pass
 
 
-async def reflect(llm, model: str, request: str, draft: dict[str, Any],
-                  observations: list[TraceStep]) -> dict[str, Any]:
+async def reflect(
+    llm, model: str, request: str, draft: dict[str, Any], observations: list[TraceStep]
+) -> dict[str, Any]:
     """Ask the model to check the draft against the observations.
 
     Returns {"verdict": "confirmed" | "revised", "issues": [...], "final": <draft dict>}.

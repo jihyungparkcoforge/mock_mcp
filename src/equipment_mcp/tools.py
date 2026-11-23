@@ -25,6 +25,7 @@ ESCALATION_LOG_PATH = DATA_DIR / "escalations.jsonl"
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def load_employees() -> dict[str, Any]:
     """Load employees.json as a dict keyed by employee ID.
 
@@ -64,6 +65,7 @@ def add_years(d: date, years: int) -> date:
 # Tool 1
 # ---------------------------------------------------------------------------
 
+
 def get_employee_info(employee_id: str, today: date | None = None) -> dict[str, Any]:
     """Return role, tenure and current equipment for an employee.
 
@@ -98,12 +100,10 @@ def get_employee_info(employee_id: str, today: date | None = None) -> dict[str, 
     }
 
 
-
-
-
 # ---------------------------------------------------------------------------
 # Tool 2
 # ---------------------------------------------------------------------------
+
 
 def get_policy_limits(role: str) -> dict[str, Any]:
     """Return what a role is eligible for and how often.
@@ -142,6 +142,7 @@ def get_policy_limits(role: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Tool 3
 # ---------------------------------------------------------------------------
+
 
 def check_request_eligibility(
     employee_id: str, item: str, today: date | None = None
@@ -201,12 +202,14 @@ def check_request_eligibility(
         if unit["item"] == item_name
     ]
     held = len(acquired)
-    result.update({
-        "currently_held": held,
-        "max_quantity": max_qty,
-        "refresh_years": refresh_years,
-        "next_eligible_date": None,
-    })
+    result.update(
+        {
+            "currently_held": held,
+            "max_quantity": max_qty,
+            "refresh_years": refresh_years,
+            "next_eligible_date": None,
+        }
+    )
 
     if held < max_qty:
         return result | {
@@ -241,6 +244,7 @@ def check_request_eligibility(
 # ---------------------------------------------------------------------------
 # Tool 4 (side-effecting)
 # ---------------------------------------------------------------------------
+
 
 def flag_for_human_review(
     employee_id: str,

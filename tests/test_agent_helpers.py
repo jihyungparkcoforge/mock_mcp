@@ -14,10 +14,12 @@ from equipment_mcp.agent import (
 
 class TestMcpToolToAnthropic:
     def test_maps_fields(self):
-        schema = {"type": "object", "properties": {"role": {"type": "string"}},
-                  "required": ["role"]}
-        tool = SimpleNamespace(name="get_policy_limits", description="Policy.",
-                               input_schema=schema)
+        schema = {
+            "type": "object",
+            "properties": {"role": {"type": "string"}},
+            "required": ["role"],
+        }
+        tool = SimpleNamespace(name="get_policy_limits", description="Policy.", input_schema=schema)
         assert mcp_tool_to_anthropic(tool) == {
             "name": "get_policy_limits",
             "description": "Policy.",
@@ -25,8 +27,9 @@ class TestMcpToolToAnthropic:
         }
 
     def test_missing_description_becomes_empty_string(self):
-        tool = SimpleNamespace(name="x", description=None,
-                               input_schema={"type": "object", "properties": {}})
+        tool = SimpleNamespace(
+            name="x", description=None, input_schema={"type": "object", "properties": {}}
+        )
         assert mcp_tool_to_anthropic(tool)["description"] == ""
 
 

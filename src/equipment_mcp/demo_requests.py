@@ -4,12 +4,12 @@ DEMO_REQUESTS = [
     {
         "employee_id": "E001",
         "request": "My laptop is almost 5 years old and really slow. Can I get a replacement?",
-        "expected": "approve",   # standard laptop cycle 4y, acquired 2022-01-10
+        "expected": "approve",  # standard laptop cycle 4y, acquired 2022-01-10
     },
     {
         "employee_id": "E001",
         "request": "I'd like a second monitor for my desk.",
-        "expected": "deny",      # standard max 1 monitor, current one from 2025-06-01
+        "expected": "deny",  # standard max 1 monitor, current one from 2025-06-01
     },
     {
         "employee_id": "E003",
