@@ -30,21 +30,40 @@ def get_employee_info(
 
 
 @mcp.tool()
-def get_policy_limits(role: str) -> dict[str, Any]:
-    """Return which items a role is eligible for, with max quantity and refresh cycle (years)."""
-    pass  # TODO
+def get_policy_limits(
+    role: Annotated[str, Field(description='Role name: "standard", "manager", or "engineer".')],
+) -> dict[str, Any]:
+    """Return which items a role is eligible for, with max quantity and refresh cycle (years).
+
+    Returns {"error": "role_not_found", "available_roles": [...]} for an unknown role.
+    """
+    return tools.get_policy_limits(role)
 
 
 @mcp.tool()
-def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
-    """Check whether requesting `item` (e.g. "laptop") is within the employee's role policy."""
-    pass  # TODO
+def check_request_eligibility(
+    employee_id: Annotated[str, Field(description='Employee ID, e.g. "E001".')],
+    item: Annotated[str, Field(description='Policy item name, e.g. "laptop" or "monitor".')],
+) -> dict[str, Any]:
+    """Check whether requesting `item` is within the employee's role policy.
+
+    `status` is one of: eligible_new, eligible_refresh, not_eligible, not_in_policy,
+    employee_not_found, role_not_found. `eligible` is None when policy cannot decide.
+    """
+    return tools.check_request_eligibility(employee_id, item)
 
 
 @mcp.tool()
-def flag_for_human_review(employee_id: str, request: str, reason: str) -> dict[str, Any]:
-    """Escalate an ambiguous or out-of-policy request to a human reviewer (creates a ticket)."""
-    pass  # TODO
+def flag_for_human_review(
+    employee_id: Annotated[str, Field(description='Employee ID, e.g. "E001".')],
+    request: Annotated[str, Field(description="The employee's original request text.")],
+    reason: Annotated[str, Field(description="Why this needs a human decision.")],
+) -> dict[str, Any]:
+    """Escalate an ambiguous or out-of-policy request to a human reviewer.
+
+    Side effect: records a review ticket. Returns the ticket (ticket_id, status, ...).
+    """
+    return tools.flag_for_human_review(employee_id, request, reason)
 
 
 if __name__ == "__main__":

@@ -10,18 +10,22 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+
 
 async def main(employee_id: str) -> None:
-    # TODO:
-    #   from mcp import ClientSession, StdioServerParameters
-    #   from mcp.client.stdio import stdio_client
-    #   params = StdioServerParameters(command=sys.executable, args=["-m", "equipment_mcp.server"])
-    #   async with stdio_client(params) as (read, write):
-    #       async with ClientSession(read, write) as session:
-    #           await session.initialize()
-    #           print tool names from await session.list_tools()
-    #           print await session.call_tool("get_employee_info", {"employee_id": employee_id})
-    pass
+    params = StdioServerParameters(command=sys.executable, args=["-m", "equipment_mcp.server"])
+    async with stdio_client(params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            tools = await session.list_tools()
+            print("Registered tools:", [t.name for t in tools.tools])
+
+            result = await session.call_tool("get_employee_info", {"employee_id": employee_id})
+            print(f"get_employee_info({employee_id!r}) -> is_error={result.is_error}")
+            print(result.content[0].text)
 
 
 if __name__ == "__main__":
