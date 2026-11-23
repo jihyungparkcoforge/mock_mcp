@@ -1,0 +1,38 @@
+{
+  "E001": {
+    "name": "Alice Kim",
+    "role": "standard",
+    "hire_date": "2021-02-01",
+    "equipment": [
+      {"item": "laptop", "acquired": "2022-01-10"},
+      {"item": "monitor", "acquired": "2025-06-01"}
+    ]
+  },
+  "E002": {
+    "name": "Brian Lee",
+    "role": "manager",
+    "hire_date": "2019-05-15",
+    "equipment": [
+      {"item": "laptop", "acquired": "2025-09-01"},
+      {"item": "monitor", "acquired": "2024-01-15"}
+    ]
+  },
+  "E003": {
+    "name": "Chloe Park",
+    "role": "engineer",
+    "hire_date": "2026-10-01",
+    "equipment": [
+      {"item": "laptop", "acquired": "2026-10-01"},
+      {"item": "monitor", "acquired": "2026-10-01"},
+      {"item": "monitor", "acquired": "2026-10-01"}
+    ]
+  },
+  "E004": {
+    "name": "Daniel Choi",
+    "role": "engineer",
+    "hire_date": "2020-08-20",
+    "equipment": [
+      {"item": "laptop", "acquired": "2023-11-23"}
+    ]
+  }
+}

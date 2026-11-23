@@ -1,0 +1,32 @@
+[project]
+name = "equipment-mcp"
+version = "0.1.0"
+description = "Mock IT equipment request system exposed as an MCP server, plus a ReAct agent"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=2.3,<3",
+    "anthropic>=2.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "ruff>=0.17.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/equipment_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

@@ -1,0 +1,14 @@
+{
+  "standard": {
+    "monitor": {"max_quantity": 1, "refresh_years": 3},
+    "laptop":  {"max_quantity": 1, "refresh_years": 4}
+  },
+  "manager": {
+    "monitor": {"max_quantity": 2, "refresh_years": 2},
+    "laptop":  {"max_quantity": 1, "refresh_years": 2}
+  },
+  "engineer": {
+    "monitor": {"max_quantity": 2, "refresh_years": 3},
+    "laptop":  {"max_quantity": 1, "refresh_years": 3}
+  }
+}
