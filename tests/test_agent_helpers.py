@@ -1,36 +1,14 @@
-"""Unit tests for the agent's pure helpers (no LLM, no MCP connection)."""
-
-from types import SimpleNamespace
-
 import pytest
 
 from equipment_mcp.agent import (
+    MAX_REFLECTION_REJECTIONS,
+    SUBMIT_DECISION_TOOL,
+    VALID_DECISIONS,
     TraceStep,
+    apply_reflection,
     format_trace_step,
-    mcp_tool_to_anthropic,
-    parse_final_decision,
+    validate_decision,
 )
-
-
-class TestMcpToolToAnthropic:
-    def test_maps_fields(self):
-        schema = {
-            "type": "object",
-            "properties": {"role": {"type": "string"}},
-            "required": ["role"],
-        }
-        tool = SimpleNamespace(name="get_policy_limits", description="Policy.", input_schema=schema)
-        assert mcp_tool_to_anthropic(tool) == {
-            "name": "get_policy_limits",
-            "description": "Policy.",
-            "input_schema": schema,
-        }
-
-    def test_missing_description_becomes_empty_string(self):
-        tool = SimpleNamespace(
-            name="x", description=None, input_schema={"type": "object", "properties": {}}
-        )
-        assert mcp_tool_to_anthropic(tool)["description"] == ""
 
 
 class TestFormatTraceStep:
@@ -39,42 +17,84 @@ class TestFormatTraceStep:
         assert format_trace_step(TraceStep(kind, "hello")) == f"{kind}: hello"
 
 
-class TestParseFinalDecision:
-    def test_parses_json_block(self):
-        text = (
-            "All checks done.\n"
-            "```json\n"
-            '{"decision": "approve", "response": "Approved.", "ticket_id": null}\n'
-            "```"
-        )
-        assert parse_final_decision(text) == {
-            "decision": "approve",
-            "response": "Approved.",
-            "ticket_id": None,
-        }
+class TestSubmitDecisionTool:
+    def test_schema_restricts_decision_values(self):
+        props = SUBMIT_DECISION_TOOL["input_schema"]["properties"]
+        assert props["decision"]["enum"] == list(VALID_DECISIONS)
 
-    def test_uses_last_json_block(self):
-        text = (
-            '```json\n{"decision": "approve", "response": "a"}\n```\n'
-            "On reflection:\n"
-            '```json\n{"decision": "escalate", "response": "b", "ticket_id": "ESC-0001"}\n```'
-        )
-        result = parse_final_decision(text)
-        assert result["decision"] == "escalate"
-        assert result["ticket_id"] == "ESC-0001"
+    def test_schema_is_strict(self):
+        schema = SUBMIT_DECISION_TOOL["input_schema"]
+        assert SUBMIT_DECISION_TOOL["strict"] is True
+        assert schema["additionalProperties"] is False
+        assert set(schema["required"]) == {"decision", "response", "ticket_id"}
 
-    def test_missing_ticket_id_defaults_to_none(self):
-        text = '```json\n{"decision": "deny", "response": "No."}\n```'
-        assert parse_final_decision(text)["ticket_id"] is None
 
-    def test_no_json_block_raises(self):
-        with pytest.raises(ValueError):
-            parse_final_decision("I approve this request.")
+class TestValidateDecision:
+    def test_approve_without_ticket_is_valid(self):
+        d = {"decision": "approve", "response": "Approved.", "ticket_id": None}
+        assert validate_decision(d, created_tickets=[]) == []
 
-    def test_invalid_json_raises(self):
-        with pytest.raises(ValueError):
-            parse_final_decision("```json\n{decision: approve}\n```")
+    def test_deny_without_ticket_is_valid(self):
+        d = {"decision": "deny", "response": "Next eligible 2028-06-01.", "ticket_id": None}
+        assert validate_decision(d, created_tickets=[]) == []
 
-    def test_unknown_decision_raises(self):
-        with pytest.raises(ValueError):
-            parse_final_decision('```json\n{"decision": "maybe", "response": "?"}\n```')
+    def test_escalate_with_created_ticket_is_valid(self):
+        d = {"decision": "escalate", "response": "Sent for review.", "ticket_id": "ESC-0001"}
+        assert validate_decision(d, created_tickets=["ESC-0001"]) == []
+
+    def test_escalate_without_ticket_is_a_problem(self):
+        d = {"decision": "escalate", "response": "Sent for review.", "ticket_id": None}
+        assert len(validate_decision(d, created_tickets=[])) == 1
+
+    def test_escalate_with_unknown_ticket_is_a_problem(self):
+        d = {"decision": "escalate", "response": "Sent for review.", "ticket_id": "ESC-9999"}
+        assert len(validate_decision(d, created_tickets=["ESC-0001"])) == 1
+
+    @pytest.mark.parametrize("decision", ["approve", "deny"])
+    def test_ticket_on_non_escalation_is_a_problem(self, decision):
+        d = {"decision": decision, "response": "Done.", "ticket_id": "ESC-0001"}
+        assert len(validate_decision(d, created_tickets=["ESC-0001"])) == 1
+
+    def test_blank_response_is_a_problem(self):
+        d = {"decision": "approve", "response": "   ", "ticket_id": None}
+        assert len(validate_decision(d, created_tickets=[])) == 1
+
+    def test_problems_are_readable_strings(self):
+        d = {"decision": "escalate", "response": "", "ticket_id": None}
+        problems = validate_decision(d, created_tickets=[])
+        assert len(problems) == 2
+        assert all(isinstance(p, str) and p.strip() for p in problems)
+
+
+class TestApplyReflection:
+    draft = {"decision": "approve", "response": "Approved.", "ticket_id": None}
+
+    def test_confirmed_keeps_draft(self):
+        review = {"verdict": "confirmed", "issues": [], "revised_response": None}
+        assert apply_reflection(self.draft, review, rejections=0) == ("accept", self.draft)
+
+    def test_revised_replaces_response_only(self):
+        review = {"verdict": "revised", "issues": ["x"], "revised_response": "Fixed."}
+        action, final = apply_reflection(self.draft, review, rejections=0)
+        assert action == "accept"
+        assert final == {"decision": "approve", "response": "Fixed.", "ticket_id": None}
+
+    def test_rejected_asks_agent_to_retry(self):
+        review = {"verdict": "rejected", "issues": ["wrong"], "revised_response": None}
+        assert apply_reflection(self.draft, review, rejections=0)[0] == "retry"
+
+    def test_rejected_past_limit_escalates(self):
+        review = {"verdict": "rejected", "issues": ["wrong"], "revised_response": None}
+        action, _ = apply_reflection(self.draft, review, rejections=MAX_REFLECTION_REJECTIONS)
+        assert action == "escalate"
+
+    def test_escalation_is_never_rejected(self):
+        draft = {"decision": "escalate", "response": "Sent.", "ticket_id": "ESC-0001"}
+        review = {"verdict": "rejected", "issues": ["?"], "revised_response": None}
+        assert apply_reflection(draft, review, rejections=0) == ("accept", draft)
+
+    def test_draft_is_not_mutated(self):
+        draft = dict(self.draft)
+        review = {"verdict": "revised", "issues": ["x"], "revised_response": "Fixed."}
+        apply_reflection(draft, review, rejections=0)
+        assert draft["response"] == "Approved."

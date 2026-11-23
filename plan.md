@@ -75,6 +75,10 @@ observes them. Exact return shapes are in the docstrings of `src/equipment_mcp/t
 | D3 | Escalate when a replacement is inside the refresh cycle but the reason is damage/failure | Policy says deny, but an exception reason exists that needs human judgment. |
 | D4 | LLM: Claude called through Microsoft Foundry (`AnthropicFoundry` client) | _owner to fill in reason_ |
 | D5 | Data in JSON files; escalations appended to `escalations.jsonl` | Separates data from code, is easy to show in screenshots, and the side effect leaves a visible file. |
+| D6 | Hand-written agent loop; MCP tools converted and called with the SDK helper `anthropic.lib.tools.mcp.async_mcp_tool` (not `tool_runner`) | Every Thought/Action/Observation is recorded and printed by our own code, which is the evidence for the ReAct criterion, and reflection can be inserted inside the loop. The SDK already converts MCP tools, so we do not re-implement that. |
+| D7 | Final answer via a local `submit_decision` tool with a strict schema (not on the MCP server) | The SDK guarantees well-formed JSON, so no text parsing is needed, and the decision shows up in the trace as the last Action. |
+| D8 | The system prompt holds only agent policy (role, status-to-decision rules, escalation principle, reply constraints). How and when to use each tool lives in the MCP tool descriptions. | MCP already tells the model how to use its tools; repeating it in the prompt couples the agent to the server and goes stale when a tool changes. |
+| D9 | Transport chosen by `MCP_SERVER_URL`: Streamable HTTP when set, stdio when empty (`equipment_mcp/transport.py`) | _owner to fill in reason_ |
 
 ## 3. Owner to confirm (chosen while scaffolding, not yet confirmed)
 
@@ -90,11 +94,17 @@ observes them. Exact return shapes are in the docstrings of `src/equipment_mcp/t
 - **C5** `flag_for_human_review` does not validate that the employee exists.
 - **C6** Tenure = `round(days / 365.25, 1)`. `today`/`now`/`log_path` are
   function parameters for deterministic tests and are **not** exposed as MCP tool arguments.
-- **C7** The agent ends with a fenced ```json block
-  `{"decision", "response", "ticket_id"}`; a missing/invalid block raises `ValueError`
-  (visible failure, no silent default).
-- **C8** Reflection: a second model call checks the draft against the recorded
-  Observations and returns `confirmed` or `revised` with a list of issues.
+- **C7** `validate_decision` checks the submitted decision against the run:
+  `escalate` needs a ticket that `flag_for_human_review` actually returned in this run;
+  `approve`/`deny` must not carry a ticket; `response` must not be blank. Problems are
+  sent back to the model as an error tool_result so it can correct itself (no crash, no
+  silent acceptance). Superseded: parsing a ```json text block (`parse_final_decision`).
+- **C8** Reflection runs inside the loop, right after `submit_decision` passes
+  `validate_decision`, and reviews the draft against the Observations.
+  `confirmed` sends it as is; `revised` replaces only the reply text; `rejected`
+  sends the issues back to the agent to re-investigate and resubmit. After
+  `MAX_REFLECTION_REJECTIONS` (2) rejections the request is escalated automatically.
+  An `escalate` decision is never rejected, because its ticket is already recorded.
 - **C9** Model `claude-opus-5-5` (Foundry deployment name via `FOUNDRY_MODEL`).
   Opus 5.5 returns 400 on forced `tool_choice` (`any`/`tool`), so use `auto`.
   Its between-tool text arrives as `thinking` blocks that are empty by default —
@@ -103,7 +113,11 @@ observes them. Exact return shapes are in the docstrings of `src/equipment_mcp/t
 - **C10** MCP Python SDK **2.x** (`mcp>=2.3`): `FastMCP` is now
   `mcp.server.mcpserver.MCPServer`; tool schemas use `input_schema` (snake_case).
   Tutorials written for 1.x will not match.
-
+- **C11** `check_request_eligibility` returns `status: "role_not_found"` (eligible None)
+  when the employee's role has no policy entry. Treated as a data problem, kept
+  separate from `not_in_policy`.
+- **C12** `strict: true` on `submit_decision` must be confirmed to work on the Foundry
+  deployment before relying on it.
 ## 4. Layout
 
 ```
@@ -131,7 +145,7 @@ Run tests with `uv run pytest -q`. Every test starts red.
 4. [ ] `get_policy_limits` → green → wrap → smoke.
 5. [ ] `check_request_eligibility` → green → wrap → smoke.
 6. [ ] `flag_for_human_review` → green → wrap → smoke. `tests/test_server.py` all green.
-7. [ ] Agent helpers (`mcp_tool_to_anthropic`, `format_trace_step`, `parse_final_decision`) → `test_agent_helpers.py` green.
+7. [ ] Agent helpers (`format_trace_step`, `validate_decision`) → `test_agent_helpers.py` green.
 8. [ ] `make_llm_client` + `run_agent` with a single hard-coded tool call; confirm a response.
 9. [ ] Full ReAct loop (model picks tools until it emits the final json block).
 10. [ ] `reflect` — capture at least one `confirmed` and ideally one `revised`. *(deliverable 8)*
@@ -143,7 +157,7 @@ Run tests with `uv run pytest -q`. Every test starts red.
 ```bash
 uv sync
 uv run pytest -q
-uv run python -m equipment_mcp.server            # stdio server
+uv run python -m equipment_mcp.server            # stdio, or HTTP if MCP_SERVER_URL is set
 uv run python scripts/smoke_client.py E001
 export ANTHROPIC_FOUNDRY_API_KEY=... ANTHROPIC_FOUNDRY_RESOURCE=...
 uv run python -m equipment_mcp.agent

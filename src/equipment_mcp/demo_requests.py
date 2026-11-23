@@ -1,5 +1,3 @@
-"""The four demo requests for Part 6, with the decision each one should reach."""
-
 DEMO_REQUESTS = [
     {
         "employee_id": "E001",
