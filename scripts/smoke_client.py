@@ -1,8 +1,7 @@
-"""Minimal MCP client: start the server over stdio, list tools, call get_employee_info.
+"""Connect to the MCP server and call get_employee_info.
 
-Run:  uv run python scripts/smoke_client.py [EMPLOYEE_ID]
-
-This is the Suggested Approach step 3 evidence (one-tool end-to-end check).
+Run: uv run python scripts/smoke_client.py [EMPLOYEE_ID]
+Uses MCP_SERVER_URL (Streamable HTTP) if set, otherwise starts the server over stdio.
 """
 
 from __future__ import annotations
@@ -10,13 +9,15 @@ from __future__ import annotations
 import asyncio
 import sys
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
+from dotenv import load_dotenv
+from mcp import ClientSession
+
+from equipment_mcp.transport import open_transport, server_url
 
 
 async def main(employee_id: str) -> None:
-    params = StdioServerParameters(command=sys.executable, args=["-m", "equipment_mcp.server"])
-    async with stdio_client(params) as (read, write):
+    print("Transport:", server_url() or "stdio")
+    async with open_transport() as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
@@ -29,4 +30,5 @@ async def main(employee_id: str) -> None:
 
 
 if __name__ == "__main__":
+    load_dotenv()
     asyncio.run(main(sys.argv[1] if len(sys.argv) > 1 else "E001"))

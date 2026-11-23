@@ -1,5 +1,3 @@
-"""Unit tests for the plain functions in equipment_mcp.tools (no MCP protocol)."""
-
 import json
 from datetime import date, datetime
 
@@ -14,11 +12,6 @@ from equipment_mcp.tools import (
 
 TODAY = date(2026, 11, 23)
 NOW = datetime(2026, 11, 23, 10, 0, 0)
-
-
-# ---------------------------------------------------------------------------
-# get_employee_info
-# ---------------------------------------------------------------------------
 
 
 class TestGetEmployeeInfo:
@@ -58,11 +51,6 @@ class TestGetEmployeeInfo:
         assert get_employee_info("   ", today=TODAY)["error"] == "employee_not_found"
 
 
-# ---------------------------------------------------------------------------
-# get_policy_limits
-# ---------------------------------------------------------------------------
-
-
 class TestGetPolicyLimits:
     def test_standard_policy(self):
         assert get_policy_limits("standard") == {
@@ -97,11 +85,6 @@ class TestGetPolicyLimits:
         first = get_policy_limits("standard")
         first["items"]["laptop"]["refresh_years"] = 99
         assert get_policy_limits("standard")["items"]["laptop"]["refresh_years"] == 4
-
-
-# ---------------------------------------------------------------------------
-# check_request_eligibility
-# ---------------------------------------------------------------------------
 
 
 class TestCheckRequestEligibility:
@@ -183,11 +166,6 @@ class TestCheckRequestEligibility:
     def test_always_has_reason(self, employee_id, item):
         r = check_request_eligibility(employee_id, item, today=TODAY)
         assert isinstance(r["reason"], str) and r["reason"].strip()
-
-
-# ---------------------------------------------------------------------------
-# flag_for_human_review
-# ---------------------------------------------------------------------------
 
 
 class TestFlagForHumanReview:

@@ -1,8 +1,3 @@
-"""Checks that the MCP server registers the four tools and the wrappers delegate to tools.py.
-
-Calls the MCPServer in-process (no subprocess), so it runs in CI without an LLM.
-"""
-
 import asyncio
 import json
 
@@ -17,7 +12,7 @@ EXPECTED_TOOLS = {
 
 
 def _call(name, args):
-    result = asyncio.run(mcp.call_tool(name, args))  # CallToolResult (mcp 2.x)
+    result = asyncio.run(mcp.call_tool(name, args))
     assert not result.is_error, result.content
     return json.loads(result.content[0].text)
 
