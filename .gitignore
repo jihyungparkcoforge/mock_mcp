@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual env (uv)
+.venv/
+
+# Test / lint caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets (Foundry API key etc.)
+.env
+.env.*
+
+# Runtime side effect of flag_for_human_review
+src/equipment_mcp/data/escalations.jsonl
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
