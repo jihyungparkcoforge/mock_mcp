@@ -9,7 +9,9 @@ of raising, so the agent can observe the failure and react to it.
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
+from logging import raiseExceptions
 from pathlib import Path
 from typing import Any
 
@@ -24,23 +26,30 @@ ESCALATION_LOG_PATH = DATA_DIR / "escalations.jsonl"
 # ---------------------------------------------------------------------------
 
 def load_employees() -> dict[str, Any]:
-    """Load employees.json as a dict keyed by employee ID."""
-    pass
+    """Load employees.json as a dict keyed by employee ID.
+
+    Read on every call (no cache) so edits to the JSON show up without a restart.
+    A missing or malformed file raises (FileNotFoundError / json.JSONDecodeError):
+    that is a setup bug, not something the agent should see as a normal result.
+    """
+    with EMPLOYEES_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
 
 
 def load_policies() -> dict[str, Any]:
     """Load policies.json as a dict keyed by role."""
-    pass
+    with POLICIES_PATH.open(encoding="utf-8") as f:
+        return json.load(f)
 
 
 def normalize_employee_id(employee_id: str) -> str:
     """Strip whitespace and upper-case an employee ID (" e001 " -> "E001")."""
-    pass
+    return employee_id.strip().upper()
 
 
 def normalize_key(value: str) -> str:
     """Strip whitespace and lower-case a role or item name (" Laptop " -> "laptop")."""
-    pass
+    return value.strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -62,7 +71,26 @@ def get_employee_info(employee_id: str, today: date | None = None) -> dict[str, 
     Unknown or empty ID:
         {"error": "employee_not_found", "employee_id": <normalized id>}
     """
-    pass
+
+    today = today or date.today()
+    eid = normalize_employee_id(employee_id)
+
+    record = load_employees().get(eid)
+    if record is None:
+        return {"error": "employee_not_found", "employee_id": eid}
+
+    hire_date = date.fromisoformat(record["hire_date"])
+    return {
+        "employee_id": eid,
+        "name": record["name"],
+        "role": record["role"],
+        "hire_date": record["hire_date"],
+        "tenure_years": round((today - hire_date).days / 365.25, 1),
+        "equipment": [dict(unit) for unit in record["equipment"]],
+    }
+
+
+
 
 
 # ---------------------------------------------------------------------------
