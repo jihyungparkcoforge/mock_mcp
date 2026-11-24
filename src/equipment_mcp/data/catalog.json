@@ -1,0 +1,18 @@
+{
+  "currency": "USD",
+  "auto_approve_limit": 2000,
+  "items": {
+    "laptop": {
+      "price": 1400
+    },
+    "monitor": {
+      "price": 300
+    },
+    "headset": {
+      "price": 120
+    },
+    "workstation": {
+      "price": 3200
+    }
+  }
+}

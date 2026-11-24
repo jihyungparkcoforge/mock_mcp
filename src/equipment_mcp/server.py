@@ -1,17 +1,16 @@
-"""MCP server. Run: uv run python -m equipment_mcp.server
-
-Serves Streamable HTTP at MCP_SERVER_URL when it is set, stdio otherwise.
-"""
-
 from __future__ import annotations
 
+import sys
+from functools import partial, wraps
 from typing import Annotated, Any
 
 from dotenv import load_dotenv
 from mcp.server.mcpserver import MCPServer
 from pydantic import Field
 
-from equipment_mcp import tools
+from equipment_mcp import equipment, tools
+from equipment_mcp.ports import EquipmentData, TicketStore
+from equipment_mcp.repositories import JsonTicketStore
 from equipment_mcp.transport import http_settings, server_url
 
 mcp = MCPServer("equipment-requests")
@@ -125,9 +124,104 @@ def flag_for_human_review(
     return tools.flag_for_human_review(employee_id, request, reason)
 
 
+@mcp.tool()
+def get_item_catalog(
+    item: Annotated[str, Field(description='Policy item name, e.g. "laptop" or "monitor".')],
+) -> dict[str, Any]:
+    """
+    Look up an item's price and the auto-approval price limit.
+
+    Use this tool when:
+    - A request may be approved and its cost must be known.
+
+    Returns:
+    - price, currency, and auto_approve_limit (items above the limit need a manager).
+    - {"error": "item_not_in_catalog"} if the item is not sold internally.
+    """
+    return tools.get_item_catalog(item)
+
+
+@mcp.tool()
+def get_department_budget(
+    department: Annotated[str, Field(description="Department name from get_employee_info.")],
+) -> dict[str, Any]:
+    """
+    Look up a department's annual equipment budget and how much is left.
+
+    Use this tool when:
+    - A request may be approved and must be paid from the department budget.
+
+    Returns:
+    - annual_budget, spent, and remaining.
+    - {"error": "department_not_found", "available_departments": [...]} if unknown.
+    """
+    return tools.get_department_budget(department)
+
+
+@mcp.tool()
+def check_inventory(
+    item: Annotated[str, Field(description='Policy item name, e.g. "laptop" or "monitor".')],
+) -> dict[str, Any]:
+    """
+    Check how many units of an item are in stock.
+
+    Use this tool when:
+    - A request may be approved and the item must be available to hand out.
+
+    Returns:
+    - in_stock count and restock_date (null when no restock is scheduled).
+    - {"error": "item_not_in_inventory"} if the item is not stocked.
+    """
+    return tools.check_inventory(item)
+
+
+@mcp.tool()
+def get_open_requests(
+    employee_id: Annotated[str, Field(description='Employee ID, e.g. "E001".')],
+) -> dict[str, Any]:
+    """
+    List the employee's equipment requests that are already in progress.
+
+    Use this tool when:
+    - Checking whether the same item was already requested and not yet delivered.
+
+    Returns:
+    - open_requests with request_id, item, status, and created date.
+    - {"error": "employee_not_found"} for an unknown employee ID.
+    """
+    return tools.get_open_requests(employee_id)
+
+
+def create_server(data: EquipmentData, tickets: TicketStore) -> MCPServer:
+    """Bind repositories to business functions without exposing them as MCP parameters."""
+    server = MCPServer("equipment-requests")
+
+    def bind(schema, operation):
+        @wraps(schema)
+        def call(*args, **kwargs):
+            return operation(*args, **kwargs)
+
+        return call
+
+    operations = (
+        (get_employee_info, partial(equipment.get_employee_info, data=data)),
+        (get_policy_limits, partial(equipment.get_policy_limits, data=data)),
+        (check_request_eligibility, partial(equipment.check_request_eligibility, data=data)),
+        (flag_for_human_review, partial(equipment.flag_for_human_review, tickets=tickets)),
+        (get_item_catalog, partial(equipment.get_item_catalog, data=data)),
+        (get_department_budget, partial(equipment.get_department_budget, data=data)),
+        (check_inventory, partial(equipment.check_inventory, data=data)),
+        (get_open_requests, partial(equipment.get_open_requests, data=data)),
+    )
+    for schema, operation in operations:
+        server.add_tool(bind(schema, operation))
+    return server
+
+
 if __name__ == "__main__":
     load_dotenv()
-    url = server_url()
+    mcp = create_server(tools.default_data(), JsonTicketStore(tools.ESCALATION_LOG_PATH))
+    url = None if "--stdio" in sys.argv else server_url()
     if url:
         mcp.run(transport="streamable-http", **http_settings(url))
     else:

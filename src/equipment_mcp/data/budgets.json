@@ -1,0 +1,18 @@
+{
+  "Finance": {
+    "annual_budget": 20000,
+    "spent": 8200
+  },
+  "Sales": {
+    "annual_budget": 15000,
+    "spent": 9100
+  },
+  "Engineering": {
+    "annual_budget": 60000,
+    "spent": 21000
+  },
+  "Operations": {
+    "annual_budget": 5000,
+    "spent": 4850
+  }
+}

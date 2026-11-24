@@ -16,6 +16,12 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
+# Local benchmark experiments
+/bench/
+
+# Local PDF submission plan
+/pdf_submission_plan.md
+
 # Secrets (Foundry API key etc.)
 .env
 .env.*
