@@ -53,6 +53,11 @@ def response_json(message) -> dict[str, Any]:
     return json.loads(next(b.text for b in message.content if b.type == "text"))
 
 
+def cached_system(prompt: str) -> list[dict[str, Any]]:
+    """Keep a reusable system prefix separate from the growing conversation."""
+    return [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}]
+
+
 class FoundryAdapter:
     def __init__(self, client, deployment_name: str, max_tokens: int = MAX_TOKENS):
         self.client = client
@@ -63,7 +68,8 @@ class FoundryAdapter:
         message = await self.client.messages.create(
             model=self.deployment_name,
             max_tokens=self.max_tokens,
-            system=REQUEST_SPLIT_PROMPT,
+            cache_control={"type": "ephemeral"},
+            system=cached_system(REQUEST_SPLIT_PROMPT),
             messages=[{"role": "user", "content": request}],
             output_config={"format": {"type": "json_schema", "schema": REQUEST_SPLIT_SCHEMA}},
         )
@@ -91,7 +97,8 @@ class FoundryAdapter:
         message = await self.client.messages.create(
             model=self.deployment_name,
             max_tokens=self.max_tokens,
-            system=REFLECTION_PROMPT,
+            cache_control={"type": "ephemeral"},
+            system=cached_system(REFLECTION_PROMPT),
             messages=[{"role": "user", "content": prompt}],
             output_config={"format": {"type": "json_schema", "schema": REFLECTION_SCHEMA}},
         )
@@ -110,7 +117,11 @@ class FoundrySession:
         props = submission["input_schema"]["properties"]
         props["request_id"]["enum"] = [context.task.request_id]
         props["item"]["enum"] = [context.task.item]
-        self.definitions = copy.deepcopy(tools) + [submission]
+        self.definitions = copy.deepcopy(tools)
+        if self.definitions:
+            # The common MCP prefix survives changes to the per-item submission schema.
+            self.definitions[-1]["cache_control"] = {"type": "ephemeral"}
+        self.definitions.append(submission)
         self.messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -141,15 +152,19 @@ class FoundrySession:
         message = await self.adapter.client.messages.create(
             model=self.adapter.deployment_name,
             max_tokens=self.adapter.max_tokens,
-            system=SYSTEM_PROMPT
-            + (
-                "\nHandle only the current request ID and item. "
-                "Submit exactly one decision for it. "
-                "When calling flag_for_human_review, the application attaches the original message "
-                "verbatim and adds this request ID and item to the reason. "
-                "Repeated flag calls reuse this request's ticket. "
-                "Earlier approvals in this submission reserve budget: subtract "
-                "those reservations from the department's remaining budget before approving."
+            cache_control={"type": "ephemeral"},
+            system=cached_system(
+                SYSTEM_PROMPT
+                + (
+                    "\nHandle only the current request ID and item. "
+                    "Submit exactly one decision for it. "
+                    "When calling flag_for_human_review, the application attaches "
+                    "the original message "
+                    "verbatim and adds this request ID and item to the reason. "
+                    "Repeated flag calls reuse this request's ticket. "
+                    "Earlier approvals in this submission reserve budget: subtract "
+                    "those reservations from the department's remaining budget before approving."
+                )
             ),
             tools=self.definitions,
             thinking={"type": "adaptive", "display": "summarized"},

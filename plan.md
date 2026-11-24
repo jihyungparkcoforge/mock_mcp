@@ -95,7 +95,7 @@ connections, and malformed data are technical errors, not business decisions.
 |---|---|---|---|---|---|
 | E001 | standard | Finance | active | laptop 2022-01-10, monitor 2025-06-01 | approve laptop / deny 2nd monitor |
 | E002 | manager | Sales | active | laptop 2025-09-01, monitor 2024-01-15 | escalate cracked laptop / deny monitor (open ORD-1042) |
-| E003 | engineer | Engineering | active | laptop + 2 monitors 2026-10-01 | escalate webcam (not in policy) |
+| E003 | engineer | Engineering | active | laptop + 2 monitors 2026-10-01 | escalate webcam (not in policy) / deny laptop (refresh not due) |
 | E004 | engineer | Engineering | active | laptop 2023-11-23 | escalate headset (no stock) / workstation (over limit) |
 | E005 | standard | Operations | active | laptop 2024-05-01 | escalate monitor (budget 150 < 300) |
 | E006 | engineer | Engineering | on_leave | laptop 2022-06-01 | escalate laptop (on leave) |
@@ -107,13 +107,17 @@ connections, and malformed data are technical errors, not business decisions.
 | 1 | E001 laptop replacement | approve | all six checks pass |
 | 2 | E001 second monitor | deny | not_eligible |
 | 3 | E003 4K webcam | escalate | not in policy |
-| 4 | E002 cracked laptop | escalate | damage inside refresh cycle |
-| 5 | E002 another monitor | deny | open request ORD-1042 |
-| 6 | E007 new laptop | deny | employee leaving |
-| 7 | E005 first monitor | escalate | budget below price |
-| 8 | E004 headset | escalate | out of stock |
-| 9 | E004 workstation | escalate | price above limit |
-| 10 | E006 laptop refresh | escalate | employee on leave |
+| 4 | E003 claims an almost-five-year-old laptop | deny | recorded acquisition is 2026-10-01; refresh not due, no explicit damage/failure |
+| 5 | E002 cracked laptop | escalate | damage inside refresh cycle |
+| 6 | E002 another monitor | deny | open request ORD-1042 |
+| 7 | E007 new laptop | deny | employee leaving |
+| 8 | E005 first monitor | escalate | budget below price |
+| 9 | E004 headset | escalate | out of stock |
+| 10 | E004 workstation | escalate | price above limit |
+| 11 | E006 laptop refresh | escalate | employee on leave |
+
+The 11 default-data cases contain one approval, four denials and six escalations.
+Case 4 checks the employee's claimed equipment age against the recorded date.
 
 ## 2. Request handling and boundaries
 
@@ -157,7 +161,10 @@ connections, and malformed data are technical errors, not business decisions.
 Limitations: an empty or invalid extraction raises an error before the item loop.
 A request whose item cannot be identified is not guaranteed an automatic human-review
 fallback. A model or transport error also must not be presented as an approval,
-denial, or successful escalation. The step limit applies independently to each item.
+denial, or successful escalation. The step limit defaults to 14 iterations per item.
+One iteration is a next-action model call plus its tool executions. Extraction and
+final review calls are additional. Exhaustion raises an error, preserving completed
+items; it does not automatically escalate.
 
 ## 3. ReAct and reflection
 
@@ -246,6 +253,20 @@ These are recorded runs of the earlier agent, not fresh runs of the refactored
 workflow. Current tests independently cover confirmation, reply revision, rejection
 retries, and forced escalation without a paid model call.
 
+### 3.3 Prompt caching
+
+Prompt caching is enabled by default alongside parallel read-only tool execution.
+Extraction, ReAct turns and final review use top-level
+`cache_control={"type": "ephemeral"}` for automatic 5-minute caching. The system
+prompt is an explicitly cacheable text block. A further breakpoint on the last
+shared MCP tool precedes the per-item `submit_decision` schema, preserving reuse
+of common tool descriptions across items. Automatic caching covers growing history.
+
+Prompt text, tool parameters and decision rules remain unchanged. Full input is
+still sent; only processing of matching prefixes is reused. Cache writes and reads
+have distinct costs, and cache hits depend on the provider's minimum length and
+expiry rules. This neither caches decisions nor replaces any reflection call.
+
 ## 4. Code layout
 
 ```text
@@ -257,7 +278,7 @@ src/equipment_mcp/
   ports.py          model, tool, data and ticket interfaces
   policy.py         decision rules, structural validation, fact recording, review outcomes
   prompts.py        Foundry prompts and structured-output schemas
-  foundry.py        model adapter and provider conversation history
+  foundry.py        model adapter, prompt caching and provider conversation history
   mcp_executor.py   SDK tool wrappers and JSON facts for the workflow
   transport.py      stdio or Streamable HTTP connection selection
   server.py         MCP schemas and create_server(data, tickets)
@@ -265,7 +286,7 @@ src/equipment_mcp/
   repositories.py   JSON data reads, SQLite tickets, in-memory implementations
   storage.py        default JSON data and SQLite ticket repository creation
   formatting.py     trace and result formatting
-  demo_requests.py  10 requests and expected decisions
+  demo_requests.py  11 requests and expected decisions
   data/             employees, policies, catalog, budgets, inventory, open requests
 scripts/smoke_client.py       MCP connection and employee lookup check
 tests/                       tool, policy, workflow, adapter and boundary tests
@@ -312,31 +333,36 @@ benchmark has not been rerun against the new workflow, so neither a new accuracy
 percentage nor measured improvement is claimed.
 
 Source: local `bench/results/haiku_full/summary.json` and `runs.jsonl`. Benchmark
-fixtures may override data per scenario; their results are not the ten default-data
+fixtures may override data per scenario; their results are not the 11 default-data
 demo requests listed in section 1.6. Benchmark artifacts remain outside the submission
 repository unless included separately by the owner.
 
 ### 5.3 Current automated checks
 
-Latest local verification: **131 submission tests and 77 local benchmark tests passed**
-(208 total); `ruff check .` passed. Concurrent submissions on one workflow are also
+Latest local verification (2026-11-24): **138 submission tests passed**;
+`ruff check src tests` passed. Concurrent submissions on one workflow are also
 covered, including isolated item traces, reflections and ticket retry keys.
 This includes thread/process concurrency, retry conflicts, and MCP Streamable HTTP.
 The earlier 128-test suite also passed in a temporary submission-only copy without
 `bench/`. A remote CI run for the SQLite change has not yet been verified.
 
 - Tool tests cover ordinary lookups, unknown keys, normalization, refresh boundaries,
-  empty ticket fields, sequential IDs, and persisted ticket contents.
+  leap-day anniversaries, missing role policies, oldest-unit selection with distinct
+  dates in either order, and returned-policy copy isolation. Ticket tests cover empty
+  fields, sequential IDs, and persisted contents.
 - Workflow tests use scripted model responses to exercise approval evidence, denial
   finalization, multiple items, duplicate submissions, isolated tickets and facts,
-  budget reservations, rejected drafts and partial failures. They test application
+  budget reservations, rejected drafts and partial failures. Step-limit tests check
+  exact exhaustion without an extra call or automatic ticket, per-item limits, and
+  accepting a decision on the last allowed turn. They test application
   behavior, not a real model's decision accuracy.
 - Scheduling tests prove overlapping reads with event barriers, ordered results,
   recoverable errors, write/decision boundaries, duplicate-call ordering and sibling
   cancellation on fatal errors. Three reads also meet a barrier over one real MCP
   HTTP session using the in-process ASGI transport. No latency improvement is claimed
   from these correctness tests.
-- Adapter tests check Foundry message translation and real local MCP stdio discovery
+- Adapter tests check Foundry message translation, cache metadata on all three call
+  paths, preserved input definitions/history, and real local MCP stdio discovery
   and calls. Core-boundary tests block external SDK imports and verify that every
   application module imports successfully with the benchmark package blocked.
 - Concurrent ticket tests issue 20 distinct requests and 20 same-key retries. HTTP
@@ -344,9 +370,8 @@ The earlier 128-test suite also passed in a temporary submission-only copy witho
   mode; they do not test TCP deployment or the default SSE connection lifecycle.
 - CI installs with `uv sync --locked`, runs `ruff check .`, then `pytest -v`.
   A passing remote run for the current working tree has not been verified.
-- Benchmark tests `test_live_cli_eval.py` and `test_tool_count_eval.py` have been moved
-  from `tests/` to ignored `bench/tests/`. Commit their removal from the tracked test
-  directory so CI no longer depends on the local benchmark package. Run them locally
+- Benchmark tests `test_live_cli_eval.py` and `test_tool_count_eval.py` live in
+  ignored `bench/tests/`, outside the tracked submission suite. Run them locally
   with `uv run python -m pytest bench/tests -q` when benchmark files are available.
 
 ## 6. Run

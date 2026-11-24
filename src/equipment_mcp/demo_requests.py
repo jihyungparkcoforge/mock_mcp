@@ -15,6 +15,11 @@ DEMO_REQUESTS = [
         "expected": "escalate",  # webcam is not in any policy
     },
     {
+        "employee_id": "E003",
+        "request": "My laptop is almost 5 years old and really slow. Can I get a replacement?",
+        "expected": "deny",  # lying
+    },
+    {
         "employee_id": "E002",
         "request": "I dropped my laptop and the screen is cracked. I need a new one.",
         "expected": "escalate",  # inside 2y cycle (2025-09-01) but damage reason

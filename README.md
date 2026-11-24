@@ -11,15 +11,17 @@ Set `FOUNDRY_MODEL` to your deployment name in `.env` or the environment. There 
 no fallback model; a missing or blank value stops execution before opening clients.
 
 ```sh
-# Run all predefined requests from demo_requests.py
+# Run all 11 predefined requests from demo_requests.py
 uv run python -m equipment_mcp.agent --demo
 
 # Enter an employee ID and one free-text request (which may contain multiple items)
 uv run python -m equipment_mcp.agent --interactive
 ```
 
-Both modes print the trace, decisions and reflection results. Demo mode also compares
-with the expected decision and ends with totals, decision accuracy and mismatched cases.
+Both modes print the trace, decisions and reflection results. The 11 demos cover
+one approval, four denials and six escalations; see the case table in `plan.md`.
+Demo mode compares results with the expected decisions and ends with totals,
+decision accuracy and mismatched cases.
 This score checks decision labels, not response wording or reasoning quality.
 Empty interactive input is prompted again. Without a mode,
 the CLI shows usage and exits before opening clients or making model calls.
@@ -64,10 +66,28 @@ request in the ticket reason. Repeated escalation calls reuse that item's ticket
 Use `result.decisions` for all results. The existing `result.decision` and
 `result.ticket_id` accessors remain available for a single item and raise `ValueError`
 for multiple items. `result.response` combines the per-item replies without another
-model call. `max_steps` applies to each item independently.
+model call. `max_steps` defaults to 14 iterations per item. Each iteration includes
+one next-action model call and its requested tool executions; extraction and final
+review calls are additional. Exhausting the limit raises an error rather than
+automatically escalating.
 
 If a later item cannot finish, `IncompleteRequestsError.result` retains completed
 decisions and its `pending_request_ids` lists unfinished items.
+
+## Prompt caching
+
+Parallel read-only tool execution and prompt caching are enabled by default.
+`foundry.py` enables 5-minute automatic caching on extraction, each ReAct turn,
+and final review. Each system prompt also has an explicit cache breakpoint.
+The last common MCP tool has another breakpoint before the per-item
+`submit_decision` definition, so changing its item/request ID does not invalidate
+the shared tool prefix. The growing conversation is handled by automatic caching.
+
+Full prompts and tool definitions are still sent each time. Cache hits reuse an
+identical prefix; they do not reduce context length or cache the final decision.
+Hits depend on provider minimum-length and expiry rules. New loop-reflection
+instructions after new tool results are new input; earlier copies can be reused
+as part of the unchanged history. There is no extra model call for caching.
 
 ## Concurrent tickets and retries
 
@@ -122,6 +142,7 @@ The application uses SQLite; benchmark JSONL storage has no concurrency guarante
 | `mcp_executor.py` | SDK tool wrappers and JSON facts for the workflow |
 | `equipment.py` | Equipment lookups, eligibility and ticket business rules |
 | `repositories.py` | JSON data reads, SQLite tickets and in-memory implementations |
+| `storage.py` | Default JSON paths and SQLite repository construction |
 | `app.py` | Configuration, client construction and resource cleanup |
 | `server.py` | MCP schemas and registration through `create_server(data, tickets)` |
 
@@ -225,6 +246,5 @@ imports while running local policy
 and data access, and import every application module with the benchmark package blocked. Ticket tests exercise concurrent threads and processes sharing SQLite,
 plus 20 concurrent MCP clients over in-process Streamable HTTP (ASGI, JSON responses,
 stateless mode). These protocol tests do not open network sockets. They make no paid
-model calls. Historical benchmark results under `bench/`
-describe the earlier single-decision agent; the benchmark harness has not been migrated
-to this workflow or rerun against it.
+model calls. Historical benchmark results describe the implementation recorded
+with each run and are not a substitute for current submission evidence.

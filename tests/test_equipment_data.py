@@ -14,7 +14,7 @@ from equipment_mcp.equipment import (
     get_open_requests,
     get_policy_limits,
 )
-from equipment_mcp.repositories import SqliteTicketStore
+from equipment_mcp.repositories import MemoryEquipmentData, SqliteTicketStore
 from equipment_mcp.storage import default_data
 
 TODAY = date(2026, 11, 23)
@@ -94,9 +94,18 @@ class TestGetPolicyLimits:
             "available_roles": ["engineer", "manager", "standard"],
         }
 
-    def test_result_is_a_copy(self, data):
+    def test_result_is_a_copy(self):
+        policies = {"standard": {"laptop": {"max_quantity": 1, "refresh_years": 4}}}
+
+        class SharedData:
+            def read(self, table):
+                assert table == "policies"
+                return policies  # No storage-layer copy to hide a missing business-layer copy.
+
+        data = SharedData()
         first = get_policy_limits("standard", data=data)
         first["items"]["laptop"]["refresh_years"] = 99
+        assert policies["standard"]["laptop"]["refresh_years"] == 4
         assert get_policy_limits("standard", data=data)["items"]["laptop"]["refresh_years"] == 4
 
 
@@ -148,12 +157,70 @@ class TestCheckRequestEligibility:
         assert r["status"] == "not_eligible"
         assert r["next_eligible_date"] == "2026-11-23"
 
-    def test_refresh_uses_oldest_unit(self, data):
-        # engineer holds 2 monitors from 2026-10-01 -> next 2029-10-01
-        r = check_request_eligibility("E003", "monitor", today=TODAY, data=data)
-        assert r["status"] == "not_eligible"
+    @pytest.mark.parametrize(
+        "dates",
+        [
+            ("2026-10-01", "2023-11-23"),
+            ("2023-11-23", "2026-10-01"),
+        ],
+    )
+    def test_refresh_uses_oldest_unit(self, dates):
+        data = MemoryEquipmentData(
+            {
+                "employees": {
+                    "E001": {
+                        "role": "engineer",
+                        "equipment": [
+                            {"item": "monitor", "acquired": acquired} for acquired in dates
+                        ],
+                    }
+                },
+                "policies": {"engineer": {"monitor": {"max_quantity": 2, "refresh_years": 3}}},
+            }
+        )
+        # Only the older monitor is due; list order must not affect eligibility.
+        r = check_request_eligibility("E001", "monitor", today=TODAY, data=data)
+        assert r["status"] == "eligible_refresh"
+        assert r["eligible"] is True
         assert r["currently_held"] == 2
-        assert r["next_eligible_date"] == "2029-10-01"
+
+    @pytest.mark.parametrize(
+        "today, status, due",
+        [
+            (date(2025, 2, 27), "not_eligible", "2025-02-28"),
+            (date(2025, 2, 28), "eligible_refresh", None),
+        ],
+    )
+    def test_leap_day_refresh_in_non_leap_year(self, today, status, due):
+        data = MemoryEquipmentData(
+            {
+                "employees": {
+                    "E001": {
+                        "role": "standard",
+                        "equipment": [{"item": "laptop", "acquired": "2024-02-29"}],
+                    }
+                },
+                "policies": {"standard": {"laptop": {"max_quantity": 1, "refresh_years": 1}}},
+            }
+        )
+        result = check_request_eligibility("E001", "laptop", today=today, data=data)
+        assert result["status"] == status
+        assert result["eligible"] is (status == "eligible_refresh")
+        assert result["next_eligible_date"] == due
+
+    def test_employee_role_without_policy(self):
+        data = MemoryEquipmentData(
+            {
+                "employees": {"E001": {"role": "contractor", "equipment": []}},
+                "policies": {},
+            }
+        )
+        result = check_request_eligibility("E001", "laptop", today=TODAY, data=data)
+        assert result["employee_id"] == "E001"
+        assert result["item"] == "laptop"
+        assert result["status"] == "role_not_found"
+        assert result["eligible"] is None
+        assert "contractor" in result["reason"]
 
     def test_item_not_in_policy(self, data):
         r = check_request_eligibility("E003", "webcam", today=TODAY, data=data)

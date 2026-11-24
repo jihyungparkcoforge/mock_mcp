@@ -23,7 +23,7 @@ from equipment_mcp.models import (
     ToolExecutionError,
     ToolResult,
 )
-from equipment_mcp.prompts import LOOP_REFLECTION_PROMPT
+from equipment_mcp.prompts import LOOP_REFLECTION_PROMPT, REFLECTION_PROMPT, REQUEST_SPLIT_PROMPT
 
 
 class Client:
@@ -97,7 +97,13 @@ def test_foundry_translates_calls_results_and_preserves_opaque_history():
     assert third["messages"][-1]["content"] == [{"type": "text", "text": LOOP_REFLECTION_PROMPT}]
     # Each iteration adds one instruction after results, preserving earlier history.
     assert third["messages"][:4] == second["messages"] + [{"role": "assistant", "content": []}]
-    assert first["tools"][0] == definition
+    assert first["tools"][0] == {**definition, "cache_control": {"type": "ephemeral"}}
+    assert "cache_control" not in first["tools"][-1]  # Per-item schema follows the shared prefix.
+    for request in client.calls:
+        assert request["cache_control"] == {"type": "ephemeral"}
+        assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert first["system"] == second["system"] == third["system"]
+    assert "cache_control" not in definition
     assert definition["input_schema"] == {"type": "object"}
 
 
@@ -125,6 +131,13 @@ def test_foundry_extracts_and_reviews_domain_values():
 
     asyncio.run(run())
     assert "Current request ID: r1" in client.calls[1]["messages"][0]["content"]
+    for request, prompt in zip(
+        client.calls, [REQUEST_SPLIT_PROMPT, REFLECTION_PROMPT], strict=True
+    ):
+        assert request["cache_control"] == {"type": "ephemeral"}
+        assert request["system"] == [
+            {"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}
+        ]
 
 
 @pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
