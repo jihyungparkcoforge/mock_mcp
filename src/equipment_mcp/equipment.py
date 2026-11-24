@@ -205,6 +205,7 @@ def flag_for_human_review(
     *,
     tickets: TicketStore,
     now: datetime | None = None,
+    idempotency_key: str | None = None,
 ) -> dict[str, Any]:
     if not request.strip():
         return {"error": "request_required"}
@@ -217,5 +218,6 @@ def flag_for_human_review(
             "request": request,
             "reason": reason,
             "created_at": (now or datetime.now()).isoformat(timespec="seconds"),
-        }
+        },
+        idempotency_key=idempotency_key,
     )

@@ -3,19 +3,21 @@
 import asyncio
 import copy
 import itertools
+import json
 from datetime import date
 
 import pytest
 
+from equipment_mcp.equipment import flag_for_human_review
 from equipment_mcp.models import (
     EquipmentRequest,
     IncompleteRequestsError,
     ModelTurn,
     ReviewResult,
     ToolCall,
-    ToolDefinition,
 )
 from equipment_mcp.policy import MAX_REFLECTION_REJECTIONS
+from equipment_mcp.repositories import SqliteTicketStore
 from equipment_mcp.workflow import EquipmentWorkflow
 
 IDS = itertools.count()
@@ -113,7 +115,8 @@ class Backend:
     @property
     def definitions(self):
         return [
-            ToolDefinition(name, name, {"type": "object", "properties": {}}) for name in self.names
+            {"name": name, "description": name, "input_schema": {"type": "object"}}
+            for name in self.names
         ]
 
     async def call(self, name, args):
@@ -147,6 +150,65 @@ def build(script, *, budget=1000):
     model, backend = ScriptedModel(script), Backend(budget)
     engine = EquipmentWorkflow(model, backend, clock=lambda: date(2026, 11, 23))
     return engine, model, backend
+
+
+def test_retry_keys_are_host_owned_and_stable_when_items_are_reordered(tmp_path):
+    original = "My laptop is broken. I also need a webcam."
+
+    class PersistentBackend(Backend):
+        async def call(self, name, args):
+            if name == "flag_for_human_review":
+                self.calls.append((name, copy.deepcopy(args)))
+                return flag_for_human_review(
+                    **args, tickets=SqliteTicketStore(tmp_path / "tickets.sqlite3")
+                )
+            return await super().call(name, args)
+
+    def run(items, submission_id, ticket_ids):
+        script = [plan(*items, text=original)]
+        for i, item in enumerate(items, 1):
+            script.extend(
+                [
+                    (
+                        "agent",
+                        [
+                            use(
+                                "flag_for_human_review",
+                                employee_id="E001",
+                                request="rewritten",
+                                reason="Needs review",
+                                idempotency_key="model-must-not-control-this",
+                            )
+                        ],
+                    ),
+                    ("agent", [submit(f"r{i}", item, "escalate", ticket_ids[item])]),
+                    review(),
+                ]
+            )
+        backend = PersistentBackend()
+        workflow = EquipmentWorkflow(ScriptedModel(script), backend)
+        result = asyncio.run(workflow.run(original, "E001", submission_id=submission_id))
+        keys = [args["idempotency_key"] for _, args in backend.calls]
+        assert len(set(keys)) == 2
+        assert "model-must-not-control-this" not in keys
+        assert result.submission_id
+        return result, keys
+
+    ids = {"laptop": "ESC-0001", "webcam": "ESC-0002"}
+    first, keys = run(["laptop", "webcam"], "submission-1", ids)
+    retry, retry_keys = run(["webcam", "laptop"], "submission-1", ids)
+    assert keys == list(reversed(retry_keys))
+    assert {d.ticket_id for d in first.decisions} == {d.ticket_id for d in retry.decisions}
+    assert first.submission_id == retry.submission_id == "submission-1"
+    new, new_keys = run(["laptop", "webcam"], None, {"laptop": "ESC-0003", "webcam": "ESC-0004"})
+    assert new.submission_id != first.submission_id
+    assert not set(keys).intersection(new_keys)
+
+
+def test_blank_submission_id_is_rejected_before_model_call():
+    workflow = EquipmentWorkflow(ScriptedModel([]), Backend())
+    with pytest.raises(ValueError, match="submission_id"):
+        asyncio.run(workflow.run("New webcam", "E001", submission_id=" "))
 
 
 def test_a09_duplicate_submission_does_not_overwrite_or_run_trailing_side_effect():
@@ -236,7 +298,7 @@ def test_wrong_request_item_and_employee_are_rejected_before_review_or_execution
     assert not client.script
 
 
-def test_each_item_needs_fresh_evidence():
+def test_review_can_reject_missing_evidence_for_a_new_item():
     original = "I need a headset and laptop."
     engine, client, _ = build(
         [
@@ -245,6 +307,7 @@ def test_each_item_needs_fresh_evidence():
             ("agent", [submit("r1", "headset")]),
             review(),
             ("agent", [submit("r2", "laptop")]),
+            review("rejected"),
             facts("laptop"),
             ("agent", [submit("r2", "laptop")]),
             review(),
@@ -252,8 +315,8 @@ def test_each_item_needs_fresh_evidence():
     )
     result = asyncio.run(engine.run(original, "E001"))
     assert len(result.decisions) == 2
-    assert any("price not checked for laptop" in t.content for t in result.trace)
-    assert len(result.reflections) == 2 and not client.script
+    assert any("Review rejected the decision" in t.content for t in result.trace)
+    assert len(result.reflections) == 3 and not client.script
 
 
 def test_ticket_is_scoped_idempotent_and_preserves_original_request():
@@ -289,7 +352,7 @@ def test_ticket_is_scoped_idempotent_and_preserves_original_request():
     assert not client.script
 
 
-def test_combined_approvals_cannot_exceed_department_budget():
+def test_review_rejects_combined_budget_and_receives_earlier_reservations():
     original = "I need a headset and a laptop."
     engine, client, backend = build(
         [
@@ -299,6 +362,7 @@ def test_combined_approvals_cannot_exceed_department_budget():
             review(),
             facts("laptop"),
             ("agent", [submit("r2", "laptop")]),
+            review("rejected"),
             (
                 "agent",
                 [
@@ -317,7 +381,8 @@ def test_combined_approvals_cannot_exceed_department_budget():
     )
     result = asyncio.run(engine.run(original, "E001"))
     assert [d.decision for d in result.decisions] == ["approve", "escalate"]
-    assert any("remaining budget 80 after earlier approvals" in t.content for t in result.trace)
+    assert client.contexts[1].reserved_budget == {"IT": 120}
+    assert any("Review rejected the decision" in t.content for t in result.trace)
     assert len(backend.tickets) == 1 and not client.script
 
 
@@ -376,3 +441,101 @@ def test_invalid_or_empty_extraction_cannot_start_business_calls(entries):
     with pytest.raises(ValueError):
         asyncio.run(engine.run("I need a headset.", "E001"))
     assert not backend.calls
+
+
+def test_confirmed_approval_is_not_overridden_by_business_rule_checker():
+    original = "I need a headset."
+    engine, client, _ = build(
+        [
+            plan("headset", text=original),
+            facts("headset"),
+            ("agent", [submit("r1", "headset")]),
+            review(),
+        ],
+        budget=0,
+    )
+    result = asyncio.run(engine.run(original, "E001"))
+    # Even an incorrect model/reviewer agreement is now accepted by the workflow.
+    assert result.decision == "approve"
+    assert len(result.reflections) == 1 and not client.script
+
+
+def test_confirmed_approval_without_facts_does_not_crash_budget_accounting():
+    original = "I need a headset and a laptop."
+    engine, client, _ = build(
+        [
+            plan("headset", "laptop", text=original),
+            ("agent", [submit("r1", "headset")]),
+            review(),
+            ("agent", [submit("r2", "laptop", "deny")]),
+            review(),
+        ],
+    )
+    result = asyncio.run(engine.run(original, "E001"))
+    assert [d.decision for d in result.decisions] == ["approve", "deny"]
+    assert client.contexts[1].reserved_budget == {}
+    assert client.contexts[1].unpriced_approvals == ("headset",)
+    assert any("Approval cost not reserved" in t.content for t in result.trace)
+    assert not client.script
+
+
+def test_concurrent_submissions_on_one_workflow_keep_item_state_isolated():
+    class LLM:
+        async def split_requests(self, request):
+            return [EquipmentRequest("r1", request, request)]
+
+        def start_session(self, context, tools):
+            class Session:
+                async def next_actions(self, results=None):
+                    if results is None:
+                        return ModelTurn(
+                            [
+                                use(
+                                    "flag_for_human_review",
+                                    employee_id=context.employee_id,
+                                    request=context.original,
+                                    reason="Needs review",
+                                )
+                            ]
+                        )
+                    ticket = json.loads(results[0].content)
+                    return ModelTurn(
+                        [submit("r1", context.task.item, "escalate", ticket["ticket_id"])]
+                    )
+
+            return Session()
+
+        async def review(self, context, draft, observations):
+            return ReviewResult("confirmed", [])
+
+    async def run():
+        both_submissions = asyncio.Barrier(2)
+
+        class ConcurrentBackend(Backend):
+            async def call(self, name, args):
+                if name == "flag_for_human_review":
+                    await both_submissions.wait()
+                return await super().call(name, args)
+
+        backend = ConcurrentBackend()
+        workflow = EquipmentWorkflow(LLM(), backend)
+        async with asyncio.timeout(3):
+            results = await asyncio.gather(
+                workflow.run("laptop", "E001", submission_id="laptop-request"),
+                workflow.run("webcam", "E001", submission_id="webcam-request"),
+            )
+        assert len(backend.tickets) == 2
+        assert len({ticket["idempotency_key"] for ticket in backend.tickets}) == 2
+        for result, item in zip(results, ("laptop", "webcam"), strict=True):
+            assert result.submission_id == f"{item}-request"
+            assert len(result.decisions) == 1 and result.decisions[0].item == item
+            assert result.reflections[0]["item"] == item
+            assert all(
+                step.content.startswith(f"[r1: {item}]")
+                for step in result.trace
+                if step.kind != "Requests"
+            )
+            ticket = next(t for t in backend.tickets if t["ticket_id"] == result.ticket_id)
+            assert ticket["request"] == item
+
+    asyncio.run(run())

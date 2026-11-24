@@ -10,12 +10,12 @@ from equipment_mcp.models import (
     ModelTurn,
     ReviewResult,
     ToolCall,
-    ToolDefinition,
     ToolResult,
     TraceStep,
 )
 from equipment_mcp.policy import validate_requests
 from equipment_mcp.prompts import (
+    LOOP_REFLECTION_PROMPT,
     MAX_TOKENS,
     REFLECTION_PROMPT,
     REFLECTION_SCHEMA,
@@ -32,6 +32,14 @@ def request_scope(context: DecisionContext) -> str:
         f"Current request ID: {task.request_id}\nCurrent item: {task.item}\n"
         f"Request excerpt: {task.text}\nOriginal employee message: {context.original}\n"
         "Decide ONLY this request and item. Other items are context, not decisions to submit."
+        + (
+            "\nEarlier approvals missing price or department: "
+            + ", ".join(context.unpriced_approvals)
+            + ". Reserved totals are incomplete. Do not assume missing costs are zero;"
+            + " escalate if this prevents confirming enough budget for the current item."
+            if context.unpriced_approvals
+            else ""
+        )
     )
 
 
@@ -45,15 +53,15 @@ def response_json(message) -> dict[str, Any]:
     return json.loads(next(b.text for b in message.content if b.type == "text"))
 
 
-class FoundryDecisionModel:
-    def __init__(self, client, model: str, max_tokens: int = MAX_TOKENS):
+class FoundryAdapter:
+    def __init__(self, client, deployment_name: str, max_tokens: int = MAX_TOKENS):
         self.client = client
-        self.model = model
+        self.deployment_name = deployment_name
         self.max_tokens = max_tokens
 
     async def split_requests(self, request: str) -> list[EquipmentRequest]:
         message = await self.client.messages.create(
-            model=self.model,
+            model=self.deployment_name,
             max_tokens=self.max_tokens,
             system=REQUEST_SPLIT_PROMPT,
             messages=[{"role": "user", "content": request}],
@@ -67,17 +75,13 @@ class FoundryDecisionModel:
         validate_requests(request, tasks)
         return tasks
 
-    def start_session(self, context: DecisionContext, tools: list[ToolDefinition]):
-        return FoundryDecisionSession(self, context, tools)
+    def start_session(self, context: DecisionContext, tools: list[dict[str, Any]]):
+        return FoundrySession(self, context, tools)
 
     async def review(
         self, context: DecisionContext, draft: dict[str, Any], observations: list[TraceStep]
     ) -> ReviewResult:
-        return await self.review_text(request_scope(context), draft, observations)
-
-    async def review_text(
-        self, request: str, draft: dict[str, Any], observations: list[TraceStep]
-    ) -> ReviewResult:
+        request = request_scope(context)
         observed = "\n".join(f"- {step.content}" for step in observations)
         prompt = (
             f"Employee request:\n{request}\n\nTool observations:\n{observed}\n\n"
@@ -85,7 +89,7 @@ class FoundryDecisionModel:
             f"Draft reply to the employee:\n{draft['response']}"
         )
         message = await self.client.messages.create(
-            model=self.model,
+            model=self.deployment_name,
             max_tokens=self.max_tokens,
             system=REFLECTION_PROMPT,
             messages=[{"role": "user", "content": prompt}],
@@ -94,26 +98,19 @@ class FoundryDecisionModel:
         return ReviewResult(**response_json(message))
 
 
-class FoundryDecisionSession:
+class FoundrySession:
     """Provider conversation state stays here, including opaque thinking blocks."""
 
     def __init__(
-        self, model: FoundryDecisionModel, context: DecisionContext, tools: list[ToolDefinition]
+        self, adapter: FoundryAdapter, context: DecisionContext, tools: list[dict[str, Any]]
     ):
-        self.model = model
+        self.adapter = adapter
         self.context = context
         submission = copy.deepcopy(SUBMIT_DECISION_TOOL)
         props = submission["input_schema"]["properties"]
         props["request_id"]["enum"] = [context.task.request_id]
         props["item"]["enum"] = [context.task.item]
-        self.definitions = [
-            {
-                "name": t.name,
-                "description": t.description,
-                "input_schema": copy.deepcopy(t.parameters),
-            }
-            for t in tools
-        ] + [submission]
+        self.definitions = copy.deepcopy(tools) + [submission]
         self.messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -138,13 +135,12 @@ class FoundryDecisionSession:
                     for r in results
                 ]
             else:
-                content = (
-                    f"Finish request {self.context.task.request_id} by calling submit_decision."
-                )
+                content = []
+            content.append({"type": "text", "text": LOOP_REFLECTION_PROMPT})
             self.messages.append({"role": "user", "content": content})
-        message = await self.model.client.messages.create(
-            model=self.model.model,
-            max_tokens=self.model.max_tokens,
+        message = await self.adapter.client.messages.create(
+            model=self.adapter.deployment_name,
+            max_tokens=self.adapter.max_tokens,
             system=SYSTEM_PROMPT
             + (
                 "\nHandle only the current request ID and item. "

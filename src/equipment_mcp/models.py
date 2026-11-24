@@ -8,13 +8,6 @@ from typing import Any
 
 
 @dataclass(frozen=True)
-class ToolDefinition:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-
-
-@dataclass(frozen=True)
 class ToolCall:
     call_id: str
     name: str
@@ -48,6 +41,7 @@ class DecisionContext:
     employee_id: str
     today: date
     reserved_budget: dict[str, float]
+    unpriced_approvals: tuple[str, ...] = ()
 
 
 class ToolExecutionError(RuntimeError):
@@ -56,7 +50,7 @@ class ToolExecutionError(RuntimeError):
 
 @dataclass
 class TraceStep:
-    kind: str  # Thought / Action / Observation / Reflection
+    kind: str  # Requests / Thought / Action / Observation / Reflection / Execution
     content: str
 
 
@@ -82,6 +76,7 @@ class AgentResult:
     decisions: list[ItemDecision]
     trace: list[TraceStep] = field(default_factory=list)
     reflections: list[dict[str, Any]] = field(default_factory=list)
+    submission_id: str | None = None
 
     @property
     def decision(self) -> str:

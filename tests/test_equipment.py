@@ -1,13 +1,14 @@
 import asyncio
 import json
+import sqlite3
 from datetime import date, datetime
 
 from equipment_mcp import equipment
 from equipment_mcp.repositories import (
     JsonEquipmentData,
-    JsonTicketStore,
     MemoryEquipmentData,
     MemoryTicketStore,
+    SqliteTicketStore,
 )
 from equipment_mcp.server import create_server
 
@@ -96,13 +97,14 @@ def test_mcp_server_can_use_memory_repositories_without_global_patching():
     asyncio.run(run())
 
 
-def test_json_repositories_are_lazy_and_keep_storage_outside_business_logic(tmp_path):
+def test_repositories_are_lazy_and_keep_storage_outside_business_logic(tmp_path):
     path = tmp_path / "catalog.json"
     data = JsonEquipmentData({"catalog": path})
-    tickets = JsonTicketStore(tmp_path / "tickets.jsonl")
+    tickets = SqliteTicketStore(tmp_path / "tickets.sqlite3")
     assert not path.exists() and not tickets.path.exists()
     path.write_text('{"items": {}}')
     assert data.read("catalog") == {"items": {}}
     assert tickets.append({"request": "one"})["ticket_id"] == "ESC-0001"
     assert tickets.append({"request": "two"})["ticket_id"] == "ESC-0002"
-    assert len(tickets.path.read_text().splitlines()) == 2
+    with sqlite3.connect(tickets.path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 2

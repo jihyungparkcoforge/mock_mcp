@@ -4,12 +4,15 @@ import asyncio
 import copy
 import json
 import sys
+from dataclasses import replace
 from datetime import date
 from types import SimpleNamespace
 
 import pytest
+from anthropic.lib.tools.mcp import async_mcp_tool
+from mcp.types import CallToolResult, TextContent, Tool
 
-from equipment_mcp.foundry import FoundryDecisionModel
+from equipment_mcp.foundry import FoundryAdapter
 from equipment_mcp.mcp_executor import McpToolExecutor
 from equipment_mcp.models import (
     DecisionContext,
@@ -17,10 +20,10 @@ from equipment_mcp.models import (
     ModelTurn,
     ReviewResult,
     ToolCall,
-    ToolDefinition,
     ToolExecutionError,
     ToolResult,
 )
+from equipment_mcp.prompts import LOOP_REFLECTION_PROMPT
 
 
 class Client:
@@ -58,8 +61,12 @@ def test_foundry_translates_calls_results_and_preserves_opaque_history():
         type="tool_use", id="c1", name="get_employee_info", input={"employee_id": "E001"}
     )
     client = Client([response([thinking, call]), response([]), response([])])
-    model = FoundryDecisionModel(client, "test-model", max_tokens=123)
-    definition = ToolDefinition("get_employee_info", "Employee lookup", {"type": "object"})
+    model = FoundryAdapter(client, "test-model", max_tokens=123)
+    definition = {
+        "name": "get_employee_info",
+        "description": "Employee lookup",
+        "input_schema": {"type": "object"},
+    }
     session = model.start_session(context(), [definition])
     assert not client.calls  # Construction and session creation have no I/O.
 
@@ -73,6 +80,7 @@ def test_foundry_translates_calls_results_and_preserves_opaque_history():
 
     asyncio.run(run())
     first, second, third = client.calls
+    assert LOOP_REFLECTION_PROMPT not in str(first["messages"])
     assert first["model"] == "test-model" and first["max_tokens"] == 123
     props = first["tools"][-1]["input_schema"]["properties"]
     assert props["request_id"]["enum"] == ["r1"] and props["item"]["enum"] == ["headset"]
@@ -83,10 +91,14 @@ def test_foundry_translates_calls_results_and_preserves_opaque_history():
             "tool_use_id": "c1",
             "content": "temporary error",
             "is_error": True,
-        }
+        },
+        {"type": "text", "text": LOOP_REFLECTION_PROMPT},
     ]
-    assert third["messages"][-1]["content"] == "Finish request r1 by calling submit_decision."
-    assert definition.parameters == {"type": "object"}
+    assert third["messages"][-1]["content"] == [{"type": "text", "text": LOOP_REFLECTION_PROMPT}]
+    # Each iteration adds one instruction after results, preserving earlier history.
+    assert third["messages"][:4] == second["messages"] + [{"role": "assistant", "content": []}]
+    assert first["tools"][0] == definition
+    assert definition["input_schema"] == {"type": "object"}
 
 
 def test_foundry_extracts_and_reviews_domain_values():
@@ -96,7 +108,7 @@ def test_foundry_extracts_and_reviews_domain_values():
             response([text({"verdict": "confirmed", "issues": [], "revised_response": None})]),
         ]
     )
-    model = FoundryDecisionModel(client, "test-model")
+    model = FoundryAdapter(client, "test-model")
 
     async def run():
         assert await model.split_requests("I need a headset.") == [context().task]
@@ -117,7 +129,7 @@ def test_foundry_extracts_and_reviews_domain_values():
 
 @pytest.mark.parametrize("stop", ["refusal", "max_tokens"])
 def test_foundry_rejects_incomplete_responses(stop):
-    model = FoundryDecisionModel(Client([response([], stop)]), "test-model")
+    model = FoundryAdapter(Client([response([], stop)]), "test-model")
     with pytest.raises(RuntimeError, match=stop):
         asyncio.run(model.split_requests("I need a headset."))
 
@@ -131,22 +143,18 @@ def test_mcp_pagination_and_structured_results():
             self.cursors.append(cursor)
             name = "first" if cursor is None else "second"
             return SimpleNamespace(
-                tools=[
-                    SimpleNamespace(
-                        name=name, description="lookup", input_schema={"type": "object"}
-                    )
-                ],
+                tools=[Tool(name=name, description="lookup", input_schema={"type": "object"})],
                 next_cursor="next" if cursor is None else None,
             )
 
         async def call_tool(self, name, arguments):
-            return SimpleNamespace(content=[], is_error=False, structured_content={"item": name})
+            return CallToolResult(content=[], structured_content={"item": name})
 
     async def run():
         session = Session()
         tools = await McpToolExecutor.discover(session)
         assert session.cursors == [None, "next"]
-        assert [t.name for t in tools.definitions] == ["first", "second"]
+        assert [t["name"] for t in tools.definitions] == ["first", "second"]
         assert await tools.call("second", {}) == {"item": "second"}
 
     asyncio.run(run())
@@ -164,11 +172,10 @@ def test_mcp_pagination_and_structured_results():
 def test_mcp_text_and_error_translation(value, is_error, expected):
     class Session:
         async def call_tool(self, name, arguments):
-            return SimpleNamespace(
-                content=[{"text": value}], is_error=is_error, structured_content=None
-            )
+            return CallToolResult(content=[TextContent(type="text", text=value)], is_error=is_error)
 
-    tools = McpToolExecutor(Session(), [ToolDefinition("lookup", "", {})])
+    tool = Tool(name="lookup", description="Lookup", input_schema={"type": "object"})
+    tools = McpToolExecutor([async_mcp_tool(tool, Session())])
     if expected is None:
         with pytest.raises(ToolExecutionError):
             asyncio.run(tools.call("lookup", {}))
@@ -177,29 +184,55 @@ def test_mcp_text_and_error_translation(value, is_error, expected):
 
 
 def test_mcp_unknown_tool_is_rejected_without_calling_session():
-    tools = McpToolExecutor(object(), [])
+    tools = McpToolExecutor([])
     with pytest.raises(ToolExecutionError, match="Unknown tool"):
         asyncio.run(tools.call("missing", {}))
 
 
 def test_mcp_adapter_round_trip_with_local_stdio_server():
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
+    from mcp import Client, StdioServerParameters
 
     async def run():
         params = StdioServerParameters(
             command=sys.executable, args=["-m", "equipment_mcp.server", "--stdio"]
         )
         async with asyncio.timeout(20):
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    executor = await McpToolExecutor.discover(session)
-                    assert len(executor.definitions) == 8
-                    catalog = next(t for t in executor.definitions if t.name == "get_item_catalog")
-                    assert catalog.parameters["properties"]["item"]["description"]
-                    result = await executor.call("get_item_catalog", {"item": "laptop"})
-                    assert result["item"] == "laptop"
-                    assert result["price"] > 0
+            async with Client(params, mode="legacy") as client:
+                executor = await McpToolExecutor.discover(client.session)
+                assert len(executor.definitions) == 8
+                catalog = next(t for t in executor.definitions if t["name"] == "get_item_catalog")
+                assert catalog["input_schema"]["properties"]["item"]["description"]
+                catalog_result, employee, inventory = await asyncio.gather(
+                    executor.call("get_item_catalog", {"item": "laptop"}),
+                    executor.call("get_employee_info", {"employee_id": "E001"}),
+                    executor.call("check_inventory", {"item": "monitor"}),
+                )
+                assert catalog_result["item"] == "laptop" and catalog_result["price"] > 0
+                assert employee["employee_id"] == "E001"
+                assert inventory["item"] == "monitor" and "in_stock" in inventory
 
     asyncio.run(run())
+
+
+def test_unpriced_earlier_approvals_are_visible_to_session_and_reviewer():
+    client = Client(
+        [
+            response([]),
+            response([text({"verdict": "confirmed", "issues": [], "revised_response": None})]),
+        ]
+    )
+    model = FoundryAdapter(client, "test-model")
+    current = replace(context(), unpriced_approvals=("laptop",))
+
+    async def run():
+        await model.start_session(current, []).next_actions()
+        await model.review(
+            current, {"decision": "deny", "ticket_id": None, "response": "Denied."}, []
+        )
+
+    asyncio.run(run())
+    for call in client.calls:
+        assert (
+            "Earlier approvals missing price or department: laptop"
+            in call["messages"][0]["content"]
+        )

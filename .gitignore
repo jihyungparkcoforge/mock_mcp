@@ -29,6 +29,8 @@ htmlcov/
 
 # Runtime side effect of flag_for_human_review
 src/equipment_mcp/data/escalations.jsonl
+src/equipment_mcp/data/*.sqlite3
+src/equipment_mcp/data/*.sqlite3-*
 
 # OS / editors
 .DS_Store

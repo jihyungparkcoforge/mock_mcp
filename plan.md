@@ -65,10 +65,9 @@ Approve only when **all** hold:
 If both a deny reason and an escalate reason apply, **deny**.
 "Ambiguous" means the data alone cannot decide; the agent escalates instead of guessing.
 
-Approval guard (code, not the model): an `approve` is accepted only when the run's
-tool results prove all six conditions for the submitted item (`approval_gaps`).
-`deny` and `escalate` do not require the six approval checks, so the agent can stop
-early. All decisions still require valid fields, the current request ID and item,
+The agent and its final LLM review evaluate these rules. There is no deterministic
+approval checker; an incorrect agreement between the agent and reviewer can pass.
+All decisions still require valid fields, the current request ID and item,
 and reflection. An escalation must reference a ticket created for that item.
 An unknown employee ID produces `deny` with a request to verify the ID; it does not
 create a ticket automatically.
@@ -83,7 +82,7 @@ create a ticket automatically.
 | `get_department_budget(department)` | annual_budget, spent, remaining | none |
 | `check_inventory(item)` | in_stock, restock_date | none |
 | `get_open_requests(employee_id)` | open requests (id, item, status, created) | none |
-| `flag_for_human_review(employee_id, request, reason)` | ticket `ESC-NNNN`, `pending_review` | appends a line to `data/escalations.jsonl` |
+| `flag_for_human_review(employee_id, request, reason, idempotency_key=None)` | ticket `ESC-NNNN`, `pending_review` | inserts or reuses a ticket in `data/tickets.sqlite3` |
 
 The four required tools are employee lookup, policy lookup, eligibility, and human
 review. Catalog, budget, inventory, and open-request lookups extend the decision
@@ -127,16 +126,28 @@ connections, and malformed data are technical errors, not business decisions.
 - `submit_decision` is a local model tool, not an MCP server tool. Its schema and
   runtime validation bind it to the current item and request ID. Later calls in the
   same model response are ignored once a decision is accepted.
-- Earlier approvals reserve budget for later items in the same invocation. This
-  mock records decisions; it does not place orders or persist budget spending.
+- Earlier approvals with known department and price reserve budget for later items.
+  Missing accounting data is passed to subsequent model calls as incomplete totals.
+  This mock records decisions; it does not place orders or persist budget spending.
 - Ticket creation preserves the original message and prefixes the reason with the
   current request ID and item. Repeated calls for that item reuse its ticket.
 - Employee IDs are trimmed and uppercased; role and item keys are trimmed and
   lowercased. Free-text category mapping and damage interpretation belong to the
   model. Eligibility itself uses only recorded facts and the evaluation date.
 - `flag_for_human_review` rejects blank requests or reasons without writing a ticket.
-  It does not require the employee ID to exist. JSONL ticket IDs are sequential;
-  concurrent writers and cross-invocation retry idempotency are not implemented.
+  It does not require the employee ID to exist. SQLite allocates ticket IDs inside
+  transactions; a unique idempotency key deduplicates concurrent retries. The first
+  ticket's reason and timestamp are retained. The same key with a different employee
+  or original message is rejected.
+- Callers preserve `submission_id` across agent retries. The workflow derives keys
+  per employee and item category and overrides any model-supplied key. An omitted ID
+  creates a fresh submission; it is returned in `AgentResult.submission_id`. This
+  protects ticket creation, not whole-workflow decisions or cross-run budget spending.
+- All server processes must share the same local SQLite file (`EQUIPMENT_TICKET_DB`).
+  The factory offloads synchronous operations to worker threads. Writes wait up to
+  10 seconds for a lock; a timeout remains an error. Old JSONL logs are retained
+  separately, not migrated; their historical IDs are outside the new DB's uniqueness
+  scope. Legacy JSONL writing is isolated in ignored `bench/compat/`, outside `src`.
 - Dates and repositories are injectable. They are not exposed as MCP arguments.
   Tenure is `round(days / 365.25, 1)`; leap-day anniversaries use February 28 when needed.
 - `AgentResult.decisions` contains all item results. Single-item compatibility
@@ -152,27 +163,57 @@ denial, or successful escalation. The step limit applies independently to each i
 
 ### 3.1 ReAct
 
+`run()` extracts requests and calls `run_item(context, run, max_steps)` for each item.
+The item loop delegates scheduling to `_execute_calls()` and decision review to
+`_submit_decision()`. `_RunState` holds the submission result and shared budget;
+`_ItemState` holds item-specific facts, tickets and review progress. They are local
+to each run, so concurrent submissions do not share mutable workflow state.
+
 `EquipmentWorkflow` repeats this sequence for each item:
 
 1. Ask the model for the next action using the current context and prior results.
 2. Record returned thought summaries or explanatory text as `Thought` entries.
-3. Execute selected tools and record `Action` entries.
+3. Execute consecutive independent reads concurrently; keep writes and decisions
+   sequential, and record `Action` entries.
 4. Return tool results or errors as `Observation` entries for the next model turn.
 5. Validate and review a submitted decision; retry when rejected, or finalize it.
 
 The model chooses which tools to call. It can request several in one response.
+Consecutive known read-only calls run in a TaskGroup, with at most one call per tool
+in each batch (seven maximum). Duplicate tool names, unknown operations, ticket
+creation and decision submission separate batches. Results retain call order even
+when completion order differs. A fatal error cancels and awaits sibling reads;
+recoverable tool errors are returned to the model individually. Dependencies that
+require previous results to choose arguments remain separate model turns. No extra
+LLM call is introduced by scheduling.
 This is the reasoning/action/observation loop required by the rubric; it is not a
 fixed sequence of lookups followed by a single answer. Thought entries contain
 provider-returned summaries/text, not the model's private full reasoning.
 
+From the second turn of each item session, `LOOP_REFLECTION_PROMPT` follows the
+tool-result blocks. It asks the model to assess the latest evidence, contradictions,
+errors and missing information before choosing the next action. It also handles
+validation/review rejection feedback. This uses the existing next model call, not
+an extra call; the first turn has no loop-reflection instruction.
+
 `foundry.py` translates application values to Foundry messages and preserves opaque
-provider conversation blocks. `mcp_executor.py` discovers and calls MCP tools.
-`workflow.py` knows neither SDK. `app.py` owns client and connection lifetimes.
+provider conversation blocks. `mcp_executor.py` uses `async_mcp_tool` from the
+Anthropic SDK for MCP tool definitions, calls and result/error conversion. Its
+remaining JSON decoding supplies facts for budget accounting. Tool definitions
+are plain SDK-produced dictionaries; there is no custom `ToolDefinition` class.
+`workflow.py` knows neither SDK. `app.py` uses MCP SDK `Client` to manage connection,
+initialization and cleanup, preserving the existing handshake with `mode="legacy"`.
 
 ### 3.2 Reflection
 
-After a valid draft passes the local guards, a separate model call compares the
+After a draft passes request/ticket/field validation, a separate model call compares the
 proposed decision and reply with the tool observations and decision rules:
+
+This final review remains separate from loop reflection. Local validation checks
+decision/ticket structure only; business-rule evaluation and reply verification
+are performed by the model. Budget totals include approvals with recorded department
+and price. Missing accounting data is flagged to subsequent model calls, not treated
+as zero cost.
 
 | Verdict | Application behavior |
 |---|---|
@@ -209,20 +250,20 @@ retries, and forced escalation without a paid model call.
 
 ```text
 src/equipment_mcp/
-  agent.py          compatible CLI/import entry point; loads .env for CLI use
-  app.py            settings, client/session lifetime, workflow assembly, demo main
+  agent.py          --demo/--interactive CLI, input and result display
+  app.py            settings, client/session lifetime, workflow assembly
   workflow.py       per-item ReAct loop, evidence, retries, budget reservations
   models.py         application dataclasses and errors
   ports.py          model, tool, data and ticket interfaces
-  policy.py         decision rules, validation, approval guard, review outcomes
+  policy.py         decision rules, structural validation, fact recording, review outcomes
   prompts.py        Foundry prompts and structured-output schemas
   foundry.py        model adapter and provider conversation history
-  mcp_executor.py   MCP discovery, calls and result translation
+  mcp_executor.py   SDK tool wrappers and JSON facts for the workflow
   transport.py      stdio or Streamable HTTP connection selection
   server.py         MCP schemas and create_server(data, tickets)
   equipment.py      standalone business functions with explicit dependencies
-  repositories.py   JSON and in-memory data/ticket implementations
-  tools.py          default JSON wiring and compatible public function API
+  repositories.py   JSON data reads, SQLite tickets, in-memory implementations
+  storage.py        default JSON data and SQLite ticket repository creation
   formatting.py     trace and result formatting
   demo_requests.py  10 requests and expected decisions
   data/             employees, policies, catalog, budgets, inventory, open requests
@@ -231,7 +272,7 @@ tests/                       tool, policy, workflow, adapter and boundary tests
 .github/workflows/ci.yml     dependency installation, Ruff and pytest
 ```
 
-`EquipmentWorkflow(model, tools)` only stores dependencies. Business operations such
+`EquipmentWorkflow(llm, tools)` only stores dependencies. Business operations such
 as `get_item_catalog(item, data=data)` can run without Foundry, MCP, credentials, or
 constructor bypasses. The server binds dependencies without exposing them to the model.
 
@@ -277,9 +318,12 @@ repository unless included separately by the owner.
 
 ### 5.3 Current automated checks
 
-Latest local verification: **128 submission tests passed** and `ruff check .` passed
-in a temporary copy containing only the remaining Git-tracked files, without `bench/`.
-The separate local benchmark suite has **14 passing tests**.
+Latest local verification: **131 submission tests and 77 local benchmark tests passed**
+(208 total); `ruff check .` passed. Concurrent submissions on one workflow are also
+covered, including isolated item traces, reflections and ticket retry keys.
+This includes thread/process concurrency, retry conflicts, and MCP Streamable HTTP.
+The earlier 128-test suite also passed in a temporary submission-only copy without
+`bench/`. A remote CI run for the SQLite change has not yet been verified.
 
 - Tool tests cover ordinary lookups, unknown keys, normalization, refresh boundaries,
   empty ticket fields, sequential IDs, and persisted ticket contents.
@@ -287,8 +331,17 @@ The separate local benchmark suite has **14 passing tests**.
   finalization, multiple items, duplicate submissions, isolated tickets and facts,
   budget reservations, rejected drafts and partial failures. They test application
   behavior, not a real model's decision accuracy.
+- Scheduling tests prove overlapping reads with event barriers, ordered results,
+  recoverable errors, write/decision boundaries, duplicate-call ordering and sibling
+  cancellation on fatal errors. Three reads also meet a barrier over one real MCP
+  HTTP session using the in-process ASGI transport. No latency improvement is claimed
+  from these correctness tests.
 - Adapter tests check Foundry message translation and real local MCP stdio discovery
-  and calls. Core-boundary tests block external SDK imports.
+  and calls. Core-boundary tests block external SDK imports and verify that every
+  application module imports successfully with the benchmark package blocked.
+- Concurrent ticket tests issue 20 distinct requests and 20 same-key retries. HTTP
+  tests use real MCP Streamable HTTP messages over in-process ASGI in stateless JSON
+  mode; they do not test TCP deployment or the default SSE connection lifecycle.
 - CI installs with `uv sync --locked`, runs `ruff check .`, then `pytest -v`.
   A passing remote run for the current working tree has not been verified.
 - Benchmark tests `test_live_cli_eval.py` and `test_tool_count_eval.py` have been moved
@@ -304,12 +357,14 @@ uv run pytest -q
 uv run ruff check .
 uv run python -m equipment_mcp.server
 uv run python scripts/smoke_client.py E001
-uv run python -m equipment_mcp.agent
+uv run python -m equipment_mcp.agent --demo
+uv run python -m equipment_mcp.agent --interactive
 ```
 
 Configure Foundry credentials through the environment or local `.env` before running
-an agent demo. `FOUNDRY_MODEL` selects the deployment; the code default is
-`claude-opus-5-5`, and the recorded benchmark used `claude-haiku-5-5`.
+an agent demo. `FOUNDRY_MODEL` is required and selects the deployment; there is no
+default model in code. The recorded benchmark used `claude-haiku-5-5`.
 `MCP_SERVER_URL` selects Streamable HTTP when set; otherwise the client starts a local
 stdio server. The child is explicitly passed `--stdio`. The CLI entry point is
-`agent.py`, which loads `.env` and calls `app.main()`; importing `app.py` starts nothing.
+`agent.py`, which selects `--demo` or `--interactive`, loads `.env`, and calls
+`app.run_agent()` for each request; importing `app.py` starts nothing.

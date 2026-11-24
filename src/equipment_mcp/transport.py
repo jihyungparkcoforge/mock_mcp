@@ -6,8 +6,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from mcp import StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamable_http_client
 
 
 def server_url() -> str | None:
@@ -30,11 +28,3 @@ def stdio_params() -> StdioServerParameters:
     return StdioServerParameters(
         command=sys.executable, args=["-m", "equipment_mcp.server", "--stdio"]
     )
-
-
-def open_transport():
-    """Async context manager yielding (read, write) for ClientSession."""
-    url = server_url()
-    if url:
-        return streamable_http_client(url)
-    return stdio_client(stdio_params())

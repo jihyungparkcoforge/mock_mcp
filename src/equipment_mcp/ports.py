@@ -7,22 +7,21 @@ from equipment_mcp.models import (
     EquipmentRequest,
     ModelTurn,
     ReviewResult,
-    ToolDefinition,
     ToolResult,
     TraceStep,
 )
 
 
-class DecisionSession(Protocol):
+class LLMSession(Protocol):
     async def next_actions(self, results: list[ToolResult] | None = None) -> ModelTurn: ...
 
 
-class DecisionModel(Protocol):
+class LLMAdapter(Protocol):
     async def split_requests(self, request: str) -> list[EquipmentRequest]: ...
 
     def start_session(
-        self, context: DecisionContext, tools: list[ToolDefinition]
-    ) -> DecisionSession: ...
+        self, context: DecisionContext, tools: list[dict[str, Any]]
+    ) -> LLMSession: ...
 
     async def review(
         self, context: DecisionContext, draft: dict[str, Any], observations: list[TraceStep]
@@ -31,7 +30,7 @@ class DecisionModel(Protocol):
 
 class ToolExecutor(Protocol):
     @property
-    def definitions(self) -> list[ToolDefinition]: ...
+    def definitions(self) -> list[dict[str, Any]]: ...
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -41,4 +40,6 @@ class EquipmentData(Protocol):
 
 
 class TicketStore(Protocol):
-    def append(self, fields: dict[str, Any]) -> dict[str, Any]: ...
+    def append(
+        self, fields: dict[str, Any], *, idempotency_key: str | None = None
+    ) -> dict[str, Any]: ...

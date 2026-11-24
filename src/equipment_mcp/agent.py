@@ -1,143 +1,102 @@
-"""Compatibility imports and CLI entry point. Core modules do not depend on this file."""
+"""CLI: choose --demo or --interactive to submit equipment requests."""
 
-import json
-from dataclasses import asdict
-from typing import Any
+import argparse
+import asyncio
+import os
+import sys
 
-from equipment_mcp.app import DEFAULT_MODEL as DEFAULT_MODEL
-from equipment_mcp.app import make_llm_client as make_llm_client
-from equipment_mcp.app import run_agent as run_agent
-from equipment_mcp.formatting import (
-    compact as compact,
-)
-from equipment_mcp.formatting import (
-    format_trace_step as format_trace_step,
-)
-from equipment_mcp.formatting import (
-    reflection_summary as reflection_summary,
-)
-from equipment_mcp.formatting import (
-    tool_result_text as tool_result_text,
-)
-from equipment_mcp.models import (
-    AgentResult as AgentResult,
-)
-from equipment_mcp.models import (
-    EquipmentRequest as EquipmentRequest,
-)
-from equipment_mcp.models import (
-    IncompleteRequestsError as IncompleteRequestsError,
-)
-from equipment_mcp.models import (
-    ItemDecision as ItemDecision,
-)
-from equipment_mcp.models import (
-    TraceStep as TraceStep,
-)
-from equipment_mcp.policy import (
-    DECISION_RULES as DECISION_RULES,
-)
-from equipment_mcp.policy import (
-    FACT_TOOLS as FACT_TOOLS,
-)
-from equipment_mcp.policy import (
-    MAX_REFLECTION_REJECTIONS as MAX_REFLECTION_REJECTIONS,
-)
-from equipment_mcp.policy import (
-    VALID_DECISIONS as VALID_DECISIONS,
-)
-from equipment_mcp.policy import (
-    apply_reflection as apply_reflection,
-)
-from equipment_mcp.policy import (
-    approval_gaps as approval_gaps,
-)
-from equipment_mcp.policy import (
-    record_fact as record_fact,
-)
-from equipment_mcp.policy import (
-    validate_decision as validate_decision,
-)
-from equipment_mcp.prompts import (
-    MAX_TOKENS as MAX_TOKENS,
-)
-from equipment_mcp.prompts import (
-    REFLECTION_PROMPT as REFLECTION_PROMPT,
-)
-from equipment_mcp.prompts import (
-    REFLECTION_SCHEMA as REFLECTION_SCHEMA,
-)
-from equipment_mcp.prompts import (
-    REQUEST_SPLIT_PROMPT as REQUEST_SPLIT_PROMPT,
-)
-from equipment_mcp.prompts import (
-    REQUEST_SPLIT_SCHEMA as REQUEST_SPLIT_SCHEMA,
-)
-from equipment_mcp.prompts import (
-    SUBMIT_DECISION_TOOL as SUBMIT_DECISION_TOOL,
-)
-from equipment_mcp.prompts import (
-    SYSTEM_PROMPT as SYSTEM_PROMPT,
-)
+from dotenv import load_dotenv
+
+from equipment_mcp.app import run_agent
+from equipment_mcp.demo_requests import DEMO_REQUESTS
+from equipment_mcp.formatting import format_trace_step
+from equipment_mcp.models import AgentResult
 
 
-def model_name() -> str:
-    from equipment_mcp.app import Settings
-
-    return Settings.from_environment().model
-
-
-def __getattr__(name):
-    # Retain the historical benchmark API without importing the SDK for pure helpers.
-    if name == "AsyncAnthropicFoundry":
-        from anthropic import AsyncAnthropicFoundry
-
-        return AsyncAnthropicFoundry
-    raise AttributeError(name)
-
-
-async def split_requests(llm, model: str, request: str) -> list[EquipmentRequest]:
-    from equipment_mcp.foundry import FoundryDecisionModel
-
-    return await FoundryDecisionModel(llm, model).split_requests(request)
+def print_result(result: AgentResult) -> None:
+    color = (
+        sys.stdout.isatty()
+        and "NO_COLOR" not in os.environ
+        and os.environ.get("TERM") != "dumb"
+    )
+    for step in result.trace:
+        print(format_trace_step(step, color=color))
+    print("-" * 78)
+    for decision in result.decisions:
+        print(f"REQUEST  : {decision.request_id} | {decision.item}")
+        print(f"DECISION : {decision.decision}")
+        if decision.ticket_id:
+            print(f"TICKET   : {decision.ticket_id}")
+        print(f"RESPONSE : {decision.response}")
+    verdicts = ", ".join(r["verdict"] for r in result.reflections)
+    print(f"REFLECT  : {verdicts}")
 
 
-async def reflect(llm, model, request, draft, observations):
-    from equipment_mcp.foundry import FoundryDecisionModel
+async def run_demos() -> None:
+    correct = 0
+    mismatches = []
+    for i, demo in enumerate(DEMO_REQUESTS, start=1):
+        print("=" * 78)
+        print(f"Request {i} | employee {demo['employee_id']} | expected: {demo['expected']}")
+        print(f"> {demo['request']}")
+        print("-" * 78)
+        result = await run_agent(demo["request"], demo["employee_id"])
+        print_result(result)
+        matched = len(result.decisions) == 1 and result.decision == demo["expected"]
+        if matched:
+            correct += 1
+        else:
+            actual = ", ".join(d.decision for d in result.decisions) or "no decision"
+            mismatches.append(
+                f"  #{i} | {demo['employee_id']} | expected: {demo['expected']} | actual: {actual}"
+            )
+        print(f"CHECK    : {'OK' if matched else 'MISMATCH'}")
+        print()
 
-    review = await FoundryDecisionModel(llm, model).review_text(request, draft, observations)
-    return asdict(review)
+    total = len(DEMO_REQUESTS)
+    accuracy = f"{correct / total:.1%}" if total else "N/A"
+    print("=" * 78)
+    print("DEMO SUMMARY")
+    print("-" * 78)
+    print(f"Total: {total}  |  Correct: {correct}  |  Mismatched: {len(mismatches)}")
+    print(f"Decision accuracy: {accuracy} ({correct}/{total})")
+    if mismatches:
+        print("Mismatched requests:")
+        print("\n".join(mismatches))
+    print("Scores decision labels only (approve / deny / escalate).")
+    print("=" * 78)
 
 
-async def force_escalation(
-    mcp_tools: dict[str, Any],
-    employee_id: str,
-    request: str,
-    review: dict[str, Any],
-    trace: list[TraceStep],
-) -> dict[str, Any]:
-    """Escalate after the review kept rejecting the agent's decision."""
-    reason = "Automated review repeatedly rejected the decision: " + "; ".join(review["issues"])
-    args = {"employee_id": employee_id, "request": request, "reason": reason}
-    trace.append(TraceStep("Action", f"flag_for_human_review({json.dumps(args)})"))
-    text = tool_result_text(await mcp_tools["flag_for_human_review"].call(args))
-    trace.append(TraceStep("Observation", compact(text)))
-    ticket_id = json.loads(text)["ticket_id"]
-    return {
-        "decision": "escalate",
-        "response": (
-            f"Your request has been sent to a reviewer for a decision. Reference: {ticket_id}."
-        ),
-        "ticket_id": ticket_id,
-    }
+def read_required(prompt: str) -> str:
+    while True:
+        value = input(prompt).strip()
+        if value:
+            return value
+        print("Please enter a value.")
+
+
+async def run_interactive() -> None:
+    employee_id = read_required("Employee ID (e.g. E001): ")
+    request = read_required("Equipment request: ")
+    print("-" * 78)
+    result = await run_agent(request, employee_id)
+    print_result(result)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the equipment request agent.")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--demo", action="store_true", help="Run all predefined demo requests.")
+    mode.add_argument(
+        "--interactive", action="store_true", help="Enter an employee ID and a request."
+    )
+    args = parser.parse_args()
+    load_dotenv()
+    try:
+        asyncio.run(run_demos() if args.demo else run_interactive())
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled.")
 
 
 if __name__ == "__main__":
-    import asyncio
-
-    from dotenv import load_dotenv
-
-    from equipment_mcp.app import main
-
-    load_dotenv()
-    asyncio.run(main())
+    main()

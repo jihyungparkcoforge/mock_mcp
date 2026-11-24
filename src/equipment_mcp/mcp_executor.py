@@ -1,52 +1,50 @@
-"""Translate MCP sessions and wire results to the application's tool interface."""
+"""Use SDK MCP tools; expose JSON facts to the equipment workflow."""
 
 import json
 from typing import Any
 
+from anthropic.lib.tools import BetaAsyncFunctionTool, ToolError
+from anthropic.lib.tools.mcp import async_mcp_tool
+from mcp.types import PaginatedRequestParams
+
 from equipment_mcp.formatting import tool_result_text
-from equipment_mcp.models import ToolDefinition, ToolExecutionError
+from equipment_mcp.models import ToolExecutionError
 
 
 class McpToolExecutor:
-    def __init__(self, session, definitions: list[ToolDefinition]):
-        self.session = session
-        self._definitions = list(definitions)
+    def __init__(self, tools: list[BetaAsyncFunctionTool]):
+        self._tools = {tool.name: tool for tool in tools}
 
     @property
-    def definitions(self) -> list[ToolDefinition]:
-        return list(self._definitions)
+    def definitions(self) -> list[dict[str, Any]]:
+        return [tool.to_dict() for tool in self._tools.values()]
 
     @classmethod
     async def discover(cls, session):
-        from mcp.types import PaginatedRequestParams
-
-        definitions = []
+        tools = []
         cursor = None
         while True:
             page = await session.list_tools(
                 params=PaginatedRequestParams(cursor=cursor) if cursor else None
             )
-            definitions.extend(
-                ToolDefinition(t.name, t.description or "", t.input_schema) for t in page.tools
-            )
+            tools.extend(async_mcp_tool(tool, session) for tool in page.tools)
             cursor = page.next_cursor
             if not cursor:
-                return cls(session, definitions)
+                return cls(tools)
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if name not in {t.name for t in self._definitions}:
+        if name not in self._tools:
             raise ToolExecutionError(f"Unknown tool {name!r}")
-        # Protocol/connection errors propagate, preserving the workflow's partial results.
-        response = await self.session.call_tool(name, arguments)
-        text = tool_result_text(response.content)
-        if response.is_error:
-            raise ToolExecutionError(text)
-        result = response.structured_content
-        if result is None:
-            try:
-                result = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise ToolExecutionError("Tool returned invalid JSON") from exc
+        try:
+            content = await self._tools[name].call(arguments)
+        except ToolError as exc:
+            raise ToolExecutionError(tool_result_text(exc.content)) from exc
+        # The SDK handles MCP conversion; our policy needs JSON objects, not content blocks.
+        # Connection failures propagate, preserving the workflow's partial results.
+        try:
+            result = json.loads(tool_result_text(content))
+        except json.JSONDecodeError as exc:
+            raise ToolExecutionError("Tool returned invalid JSON") from exc
         if not isinstance(result, dict):
             raise ToolExecutionError("Tool result must be an object")
         return result
