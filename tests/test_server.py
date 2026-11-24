@@ -8,6 +8,10 @@ EXPECTED_TOOLS = {
     "get_policy_limits",
     "check_request_eligibility",
     "flag_for_human_review",
+    "get_item_catalog",
+    "get_department_budget",
+    "check_inventory",
+    "get_open_requests",
 }
 
 
@@ -17,7 +21,7 @@ def _call(name, args):
     return json.loads(result.content[0].text)
 
 
-def test_registers_all_four_tools():
+def test_registers_all_tools():
     names = {t.name for t in asyncio.run(mcp.list_tools())}
     assert names == EXPECTED_TOOLS
 
@@ -56,3 +60,12 @@ def test_flag_for_human_review_through_server(tmp_path, monkeypatch):
     assert ticket["ticket_id"] == "ESC-0001"
     assert ticket["status"] == "pending_review"
     assert len(log.read_text().splitlines()) == 1
+
+
+def test_new_fact_tools_through_server():
+    assert _call("get_item_catalog", {"item": "monitor"})["price"] == 300
+    assert _call("get_department_budget", {"department": "Operations"})["remaining"] == 150
+    assert _call("check_inventory", {"item": "headset"})["in_stock"] == 0
+    assert _call("get_open_requests", {"employee_id": "E002"})["open_requests"][0]["item"] == (
+        "monitor"
+    )

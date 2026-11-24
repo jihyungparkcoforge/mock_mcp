@@ -1,6 +1,6 @@
 import pytest
 
-from equipment_mcp.transport import http_settings, server_url
+from equipment_mcp.transport import http_settings, server_url, stdio_params
 
 
 def test_http_settings_from_url():
@@ -28,3 +28,7 @@ def test_http_settings_rejects_bad_url(url):
 def test_server_url_empty_means_stdio(monkeypatch):
     monkeypatch.setenv("MCP_SERVER_URL", "")
     assert server_url() is None
+
+
+def test_stdio_child_is_forced_to_stdio():
+    assert stdio_params().args[-1] == "--stdio"

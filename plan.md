@@ -1,4 +1,4 @@
-# IT Equipment Request Handler — Plan
+# IT Equipment Request Handler — Requirements and Verification
 
 MCP server exposing a mock IT equipment request system, plus a ReAct agent
 (Claude via Microsoft Foundry) that approves, denies, or escalates requests.
@@ -15,150 +15,299 @@ MCP server exposing a mock IT equipment request system, plus a ReAct agent
 | `role`, `hire_date`, `equipment` | `get_employee_info` | `standard`, `2021-02-01`, `[{item, acquired}]` |
 
 ### 1.2 Policy rules (`src/equipment_mcp/data/policies.json`)
-| Role | Monitor (max qty / refresh) | Laptop (max qty / refresh) |
-|---|---|---|
-| standard | 1 / 3 years | 1 / 4 years |
-| manager | 2 / 2 years | 1 / 2 years |
-| engineer | 2 / 3 years | 1 / 3 years |
+| Role | Monitor | Laptop | Headset | Workstation |
+|---|---|---|---|---|
+| standard | 1 / 3y | 1 / 4y | 1 / 2y | not allowed |
+| manager | 2 / 2y | 1 / 2y | 1 / 2y | not allowed |
+| engineer | 2 / 3y | 1 / 3y | 1 / 2y | 1 / 4y |
+
+(max quantity / refresh cycle)
 
 Eligibility (`check_request_eligibility`), evaluated against `today`:
-- **eligible_new** — employee holds fewer units than `max_quantity`.
-- **eligible_refresh** — at `max_quantity`, and the **oldest** unit's
+- **eligible_new**: employee holds fewer units than `max_quantity`.
+- **eligible_refresh**: at `max_quantity`, and the **oldest** unit's
   `acquired + refresh_years <= today` (the due date itself counts as eligible).
-- **not_eligible** — at `max_quantity` and the oldest unit is not yet due;
+- **not_eligible**: at `max_quantity` and the oldest unit is not yet due;
   `next_eligible_date` is returned.
-- **not_in_policy** — the item is not listed for the employee's role.
-- **employee_not_found** — unknown ID.
+- **not_in_policy**: the item is not listed for the employee's role.
+- **employee_not_found** / **role_not_found**: missing data.
 
-### 1.3 Decision rules (agent)
-| Situation | Decision |
+Other data:
+- Catalog (`catalog.json`): laptop $1,400, monitor $300, headset $120,
+  workstation $3,200; auto-approve limit $2,000.
+- Department budgets (`budgets.json`): remaining = annual_budget - spent.
+- Inventory (`inventory.json`): headset is out of stock (restock 2026-12-15).
+- Open requests (`open_requests.json`): E002 has ORD-1042 (monitor, awaiting delivery).
+
+### 1.3 Decision rules (`DECISION_RULES` in `policy.py`)
+Approve only when **all** hold:
+1. eligibility status is `eligible_new` or `eligible_refresh`
+2. `employment_status` is `active`
+3. no open request for the same item
+4. price is within the auto-approve limit
+5. department remaining budget, minus earlier approvals in this invocation, covers the price
+6. item is in stock
+
+| Condition | Decision |
 |---|---|
-| `eligible_new` / `eligible_refresh` | **approve** |
-| `not_eligible`, no damage/failure reason | **deny** (state `next_eligible_date`) |
-| `not_in_policy` | **escalate** — reason: item not covered by policy |
-| `not_eligible` **and** the request cites damage/failure (broken, cracked, not turning on, …) | **escalate** — reason: out-of-cycle replacement due to damage |
+| `not_eligible`, no damage/failure reason | **deny** (give `next_eligible_date`) |
+| employee is `leaving` | **deny** |
+| open request for the same item | **deny** (give its request ID) |
+| `employee_not_found` | **deny** (ask to confirm the ID) |
+| `not_eligible` + damage/failure reason | **escalate** |
+| item not in policy or not in catalog | **escalate** |
+| price above auto-approve limit | **escalate** |
+| remaining budget below price | **escalate** |
+| out of stock | **escalate** |
+| employee `on_leave` | **escalate** |
+| `role_not_found`, missing data | **escalate** |
 
-"Ambiguous" means the policy data alone cannot decide the case correctly.
-The agent must call `flag_for_human_review` for these instead of guessing.
+If both a deny reason and an escalate reason apply, **deny**.
+"Ambiguous" means the data alone cannot decide; the agent escalates instead of guessing.
+
+Approval guard (code, not the model): an `approve` is accepted only when the run's
+tool results prove all six conditions for the submitted item (`approval_gaps`).
+`deny` and `escalate` do not require the six approval checks, so the agent can stop
+early. All decisions still require valid fields, the current request ID and item,
+and reflection. An escalation must reference a ticket created for that item.
+An unknown employee ID produces `deny` with a request to verify the ID; it does not
+create a ticket automatically.
 
 ### 1.4 Tools (MCP server)
 | Tool | Returns | Side effect |
 |---|---|---|
-| `get_employee_info(employee_id)` | role, hire date, tenure (years, 1 decimal), equipment | none |
+| `get_employee_info(employee_id)` | role, department, employment_status, hire date, tenure, equipment | none |
 | `get_policy_limits(role)` | items with `max_quantity`, `refresh_years` | none |
 | `check_request_eligibility(employee_id, item)` | `eligible`, `status`, `reason`, counts, `next_eligible_date` | none |
+| `get_item_catalog(item)` | price, currency, auto_approve_limit | none |
+| `get_department_budget(department)` | annual_budget, spent, remaining | none |
+| `check_inventory(item)` | in_stock, restock_date | none |
+| `get_open_requests(employee_id)` | open requests (id, item, status, created) | none |
 | `flag_for_human_review(employee_id, request, reason)` | ticket `ESC-NNNN`, `pending_review` | appends a line to `data/escalations.jsonl` |
 
-Lookup failures return `{"error": ...}` dicts (not exceptions) so the agent
-observes them. Exact return shapes are in the docstrings of `src/equipment_mcp/tools.py`.
+The four required tools are employee lookup, policy lookup, eligibility, and human
+review. Catalog, budget, inventory, and open-request lookups extend the decision
+checks. Lookup tools return facts, and the agent combines them. Unknown lookup keys
+return error dictionaries or eligibility status records. Invalid JSON, broken
+connections, and malformed data are technical errors, not business decisions.
 
-### 1.5 Mock data (`src/equipment_mcp/data/employees.json`, reference date 2026-11-23)
-| ID | Role | Hired | Equipment | Purpose |
-|---|---|---|---|---|
-| E001 | standard | 2021-02-01 | laptop 2022-01-10, monitor 2025-06-01 | approve (laptop) / deny (2nd monitor) |
-| E002 | manager | 2019-05-15 | laptop 2025-09-01, monitor 2024-01-15 | escalate (cracked laptop) / eligible_new monitor |
-| E003 | engineer | 2026-10-01 | laptop + 2 monitors 2026-10-01 | escalate (webcam) / at-max monitors |
-| E004 | engineer | 2020-08-20 | laptop 2023-11-23 | boundary: refresh due exactly today |
+### 1.5 Mock data (`employees.json`, reference date 2026-11-23)
+| ID | Role | Dept | Status | Equipment | Scenario |
+|---|---|---|---|---|---|
+| E001 | standard | Finance | active | laptop 2022-01-10, monitor 2025-06-01 | approve laptop / deny 2nd monitor |
+| E002 | manager | Sales | active | laptop 2025-09-01, monitor 2024-01-15 | escalate cracked laptop / deny monitor (open ORD-1042) |
+| E003 | engineer | Engineering | active | laptop + 2 monitors 2026-10-01 | escalate webcam (not in policy) |
+| E004 | engineer | Engineering | active | laptop 2023-11-23 | escalate headset (no stock) / workstation (over limit) |
+| E005 | standard | Operations | active | laptop 2024-05-01 | escalate monitor (budget 150 < 300) |
+| E006 | engineer | Engineering | on_leave | laptop 2022-06-01 | escalate laptop (on leave) |
+| E007 | standard | Sales | leaving | laptop 2021-09-01 | deny laptop (leaving) |
 
 ### 1.6 Demo requests (`src/equipment_mcp/demo_requests.py`)
-1. E001 laptop replacement (slow, ~5 years) → **approve**
-2. E001 second monitor → **deny**
-3. E003 4K webcam → **escalate** (not in policy)
-4. E002 cracked laptop screen, laptop from 2025-09 → **escalate** (damage inside cycle)
+| # | Request | Expected | Deciding condition |
+|---|---|---|---|
+| 1 | E001 laptop replacement | approve | all six checks pass |
+| 2 | E001 second monitor | deny | not_eligible |
+| 3 | E003 4K webcam | escalate | not in policy |
+| 4 | E002 cracked laptop | escalate | damage inside refresh cycle |
+| 5 | E002 another monitor | deny | open request ORD-1042 |
+| 6 | E007 new laptop | deny | employee leaving |
+| 7 | E005 first monitor | escalate | budget below price |
+| 8 | E004 headset | escalate | out of stock |
+| 9 | E004 workstation | escalate | price above limit |
+| 10 | E006 laptop refresh | escalate | employee on leave |
 
-## 2. Decisions (owner)
+## 2. Request handling and boundaries
 
-| # | Decision | Reason |
-|---|---|---|
-| D1 | Three roles: standard / manager / engineer with the limits in 1.2 | Includes the assignment's examples (standard 3y monitor, manager 2y laptop) while making role differences large enough to test. |
-| D2 | Escalate when the item is not in policy | No policy basis to approve or deny automatically. |
-| D3 | Escalate when a replacement is inside the refresh cycle but the reason is damage/failure | Policy says deny, but an exception reason exists that needs human judgment. |
-| D4 | LLM: Claude called through Microsoft Foundry (`AnthropicFoundry` client) | _owner to fill in reason_ |
-| D5 | Data in JSON files; escalations appended to `escalations.jsonl` | Separates data from code, is easy to show in screenshots, and the side effect leaves a visible file. |
-| D6 | Hand-written agent loop; MCP tools converted and called with the SDK helper `anthropic.lib.tools.mcp.async_mcp_tool` (not `tool_runner`) | Every Thought/Action/Observation is recorded and printed by our own code, which is the evidence for the ReAct criterion, and reflection can be inserted inside the loop. The SDK already converts MCP tools, so we do not re-implement that. |
-| D7 | Final answer via a local `submit_decision` tool with a strict schema (not on the MCP server) | The SDK guarantees well-formed JSON, so no text parsing is needed, and the decision shows up in the trace as the last Action. |
-| D8 | The system prompt holds only agent policy (role, status-to-decision rules, escalation principle, reply constraints). How and when to use each tool lives in the MCP tool descriptions. | MCP already tells the model how to use its tools; repeating it in the prompt couples the agent to the server and goes stale when a tool changes. |
-| D9 | Transport chosen by `MCP_SERVER_URL`: Streamable HTTP when set, stdio when empty (`equipment_mcp/transport.py`) | _owner to fill in reason_ |
+- One structured model call extracts new requests, one per item category. Existing
+  orders and background mentions are excluded. Excerpts must occur verbatim in the
+  original message; duplicate categories or IDs are rejected.
+- Requests receive IDs (`r1`, `r2`, ...) and run sequentially. Each has separate
+  observations, review retries, ticket state, and final decision. Repeated mentions
+  of one category are consolidated; multiple quantities are not supported.
+- `submit_decision` is a local model tool, not an MCP server tool. Its schema and
+  runtime validation bind it to the current item and request ID. Later calls in the
+  same model response are ignored once a decision is accepted.
+- Earlier approvals reserve budget for later items in the same invocation. This
+  mock records decisions; it does not place orders or persist budget spending.
+- Ticket creation preserves the original message and prefixes the reason with the
+  current request ID and item. Repeated calls for that item reuse its ticket.
+- Employee IDs are trimmed and uppercased; role and item keys are trimmed and
+  lowercased. Free-text category mapping and damage interpretation belong to the
+  model. Eligibility itself uses only recorded facts and the evaluation date.
+- `flag_for_human_review` rejects blank requests or reasons without writing a ticket.
+  It does not require the employee ID to exist. JSONL ticket IDs are sequential;
+  concurrent writers and cross-invocation retry idempotency are not implemented.
+- Dates and repositories are injectable. They are not exposed as MCP arguments.
+  Tenure is `round(days / 365.25, 1)`; leap-day anniversaries use February 28 when needed.
+- `AgentResult.decisions` contains all item results. Single-item compatibility
+  accessors reject multi-item results. A later processing failure preserves completed
+  results in `IncompleteRequestsError.result` and identifies pending request IDs.
 
-## 3. Owner to confirm (chosen while scaffolding, not yet confirmed)
+Limitations: an empty or invalid extraction raises an error before the item loop.
+A request whose item cannot be identified is not guaranteed an automatic human-review
+fallback. A model or transport error also must not be presented as an approval,
+denial, or successful escalation. The step limit applies independently to each item.
 
-- **C1** Lookup errors are returned as `{"error": ...}` dicts rather than raised,
-  so the agent sees them as Observations. (`flag_for_human_review` also rejects
-  blank `request`/`reason` with an error dict and writes nothing.)
-- **C2** IDs are normalized (`" e001 "` → `E001`); roles/items lower-cased and trimmed.
-  Mapping free text ("second monitor", "notebook") to an item name is the agent's job, not the tool's.
-- **C3** Damage detection (D3) is done by the agent from the request text; the
-  eligibility tool stays purely data-driven.
-- **C4** Unknown employee IDs: the agent replies asking the employee to verify
-  the ID (no approve/deny). Not one of the chosen escalation triggers.
-- **C5** `flag_for_human_review` does not validate that the employee exists.
-- **C6** Tenure = `round(days / 365.25, 1)`. `today`/`now`/`log_path` are
-  function parameters for deterministic tests and are **not** exposed as MCP tool arguments.
-- **C7** `validate_decision` checks the submitted decision against the run:
-  `escalate` needs a ticket that `flag_for_human_review` actually returned in this run;
-  `approve`/`deny` must not carry a ticket; `response` must not be blank. Problems are
-  sent back to the model as an error tool_result so it can correct itself (no crash, no
-  silent acceptance). Superseded: parsing a ```json text block (`parse_final_decision`).
-- **C8** Reflection runs inside the loop, right after `submit_decision` passes
-  `validate_decision`, and reviews the draft against the Observations.
-  `confirmed` sends it as is; `revised` replaces only the reply text; `rejected`
-  sends the issues back to the agent to re-investigate and resubmit. After
-  `MAX_REFLECTION_REJECTIONS` (2) rejections the request is escalated automatically.
-  An `escalate` decision is never rejected, because its ticket is already recorded.
-- **C9** Model `claude-opus-5-5` (Foundry deployment name via `FOUNDRY_MODEL`).
-  Opus 5.5 returns 400 on forced `tool_choice` (`any`/`tool`), so use `auto`.
-  Its between-tool text arrives as `thinking` blocks that are empty by default —
-  to show **Thought** lines in the trace, either request `thinking.display: "summarized"`
-  or instruct the model to write a short text "Thought" before each tool call. Pick one.
-- **C10** MCP Python SDK **2.x** (`mcp>=2.3`): `FastMCP` is now
-  `mcp.server.mcpserver.MCPServer`; tool schemas use `input_schema` (snake_case).
-  Tutorials written for 1.x will not match.
-- **C11** `check_request_eligibility` returns `status: "role_not_found"` (eligible None)
-  when the employee's role has no policy entry. Treated as a data problem, kept
-  separate from `not_in_policy`.
-- **C12** `strict: true` on `submit_decision` must be confirmed to work on the Foundry
-  deployment before relying on it.
-## 4. Layout
+## 3. ReAct and reflection
 
-```
-pyproject.toml                 uv project (mcp, anthropic; dev: pytest)
+### 3.1 ReAct
+
+`EquipmentWorkflow` repeats this sequence for each item:
+
+1. Ask the model for the next action using the current context and prior results.
+2. Record returned thought summaries or explanatory text as `Thought` entries.
+3. Execute selected tools and record `Action` entries.
+4. Return tool results or errors as `Observation` entries for the next model turn.
+5. Validate and review a submitted decision; retry when rejected, or finalize it.
+
+The model chooses which tools to call. It can request several in one response.
+This is the reasoning/action/observation loop required by the rubric; it is not a
+fixed sequence of lookups followed by a single answer. Thought entries contain
+provider-returned summaries/text, not the model's private full reasoning.
+
+`foundry.py` translates application values to Foundry messages and preserves opaque
+provider conversation blocks. `mcp_executor.py` discovers and calls MCP tools.
+`workflow.py` knows neither SDK. `app.py` owns client and connection lifetimes.
+
+### 3.2 Reflection
+
+After a valid draft passes the local guards, a separate model call compares the
+proposed decision and reply with the tool observations and decision rules:
+
+| Verdict | Application behavior |
+|---|---|
+| `confirmed` | Accept the draft unchanged. |
+| `revised` | Keep the decision and ticket; replace the reply text. |
+| `rejected` | Feed issues back to the item loop for investigation and resubmission. |
+
+Two rejection retries are allowed (`MAX_REFLECTION_REJECTIONS = 2`). A third rejection
+forces human review. An already-ticketed escalation is retained even if the reviewer
+returns `rejected`; its wording can still be revised. The application checks ticket
+existence and scope independently of the reviewer.
+
+The rubric accepts either a demonstrated confirmation or an improvement. It does
+not require reflection to change a decision or increase aggregate accuracy.
+
+Recorded real-model examples from the earlier Haiku MCP benchmark:
+
+- **A08, 20 tools:** headset approval passed all six checks. Reflection returned
+  `confirmed`; the final reply matched the draft.
+- **D04, 12 tools:** laptop replacement was requested one day before eligibility.
+  The draft denied it and gave 2026-11-24 as the eligible date. Reflection confirmed it.
+- **A09, 12 tools:** the headset approval was correct, but its reply asserted that
+  no new monitor request had been made. Reflection identified this as unsupported
+  by the observations and revised the reply to report only the existing pending
+  order and that the headset approval did not change it. The final reply used that
+  revision, preserving the headset approval.
+
+Source: `bench/results/haiku_full/runs.jsonl` (local, intentionally Git-ignored).
+These are recorded runs of the earlier agent, not fresh runs of the refactored
+workflow. Current tests independently cover confirmation, reply revision, rejection
+retries, and forced escalation without a paid model call.
+
+## 4. Code layout
+
+```text
 src/equipment_mcp/
-  tools.py                     plain functions (business logic)        <- TODO
-  server.py                    MCPServer wrappers, stdio               <- TODO
-  agent.py                     ReAct loop, reflection, Foundry client  <- TODO
-  demo_requests.py             4 demo requests + expected decisions
-  data/employees.json, policies.json
-scripts/smoke_client.py        one-tool end-to-end client check        <- TODO
-tests/test_tools.py            unit tests per tool (normal + edge)
-tests/test_server.py           tool registration + calls via MCPServer in-process
-tests/test_agent_helpers.py    pure agent helpers (no LLM)
+  agent.py          compatible CLI/import entry point; loads .env for CLI use
+  app.py            settings, client/session lifetime, workflow assembly, demo main
+  workflow.py       per-item ReAct loop, evidence, retries, budget reservations
+  models.py         application dataclasses and errors
+  ports.py          model, tool, data and ticket interfaces
+  policy.py         decision rules, validation, approval guard, review outcomes
+  prompts.py        Foundry prompts and structured-output schemas
+  foundry.py        model adapter and provider conversation history
+  mcp_executor.py   MCP discovery, calls and result translation
+  transport.py      stdio or Streamable HTTP connection selection
+  server.py         MCP schemas and create_server(data, tickets)
+  equipment.py      standalone business functions with explicit dependencies
+  repositories.py   JSON and in-memory data/ticket implementations
+  tools.py          default JSON wiring and compatible public function API
+  formatting.py     trace and result formatting
+  demo_requests.py  10 requests and expected decisions
+  data/             employees, policies, catalog, budgets, inventory, open requests
+scripts/smoke_client.py       MCP connection and employee lookup check
+tests/                       tool, policy, workflow, adapter and boundary tests
+.github/workflows/ci.yml     dependency installation, Ruff and pytest
 ```
 
-## 5. Build order (TDD)
+`EquipmentWorkflow(model, tools)` only stores dependencies. Business operations such
+as `get_item_catalog(item, data=data)` can run without Foundry, MCP, credentials, or
+constructor bypasses. The server binds dependencies without exposing them to the model.
 
-Run tests with `uv run pytest -q`. Every test starts red.
+## 5. Verification and submission evidence
 
-1. [ ] **Hello server** — throwaway one-tool server (e.g. `ping`) + client; screenshot. *(deliverable 2)*
-2. [ ] `load_*`, `normalize_*`, `get_employee_info` → `TestGetEmployeeInfo` green.
-3. [ ] Wrap `get_employee_info` in `server.py`; implement `scripts/smoke_client.py`;
-       run `uv run python scripts/smoke_client.py E001`; screenshot. *(deliverable 2)*
-4. [ ] `get_policy_limits` → green → wrap → smoke.
-5. [ ] `check_request_eligibility` → green → wrap → smoke.
-6. [ ] `flag_for_human_review` → green → wrap → smoke. `tests/test_server.py` all green.
-7. [ ] Agent helpers (`format_trace_step`, `validate_decision`) → `test_agent_helpers.py` green.
-8. [ ] `make_llm_client` + `run_agent` with a single hard-coded tool call; confirm a response.
-9. [ ] Full ReAct loop (model picks tools until it emits the final json block).
-10. [ ] `reflect` — capture at least one `confirmed` and ideally one `revised`. *(deliverable 8)*
-11. [ ] Run the 4 demo requests; save full traces + decisions. *(deliverables 6, 7)*
-12. [ ] CI: GitHub Actions running `uv sync` + `uv run pytest -q` (no API key needed). *(deliverable 9)*
+### 5.1 Build history and minimal connection
+
+| Commit | Evidence in the source |
+|---|---|
+| `e7335a0` | Initial test/code scaffolding; smoke client is a TODO. |
+| `12f9082` | Employee lookup implemented; the other three server tools remain stubs. Smoke client is still a TODO. |
+| `a37bf01` | Remaining core tools and the working employee-lookup smoke client are implemented. |
+| `1a68293` | Foundry agent integration follows the tool/client work. |
+
+This demonstrates incremental implementation and a completed smoke client before
+agent integration. Commit contents alone do not prove the date of a successful
+connection run, or a successful client run before the other tools were implemented.
+For rubric evidence, show the relevant commit/diff and successful client output.
+Label a replay of an earlier revision as a reproduction, not a historical run log.
+The current local stdio integration test verifies discovery and a real tool call.
+
+### 5.2 Approval, denial and escalation evidence
+
+The previous real-model benchmark completed 90 MCP runs: 30 scenarios at each of
+8, 12 and 20 tools, using `claude-haiku-5-5`.
+
+| Expected decision | Correct final decisions | Notes |
+|---|---:|---|
+| approve | 29/30 | A09 with 8 tools suffered the former duplicate-submission overwrite bug. |
+| deny | 30/30 | All recorded final decision labels matched expectations. |
+| escalate | 30/30 | Correct decision labels; separate exact request-text checks failed in three runs. |
+
+Decision-label correctness was 89/90; full-case success was 86/90. These metrics
+are distinct. The duplicate-submission bug was fixed by per-item scope and stopping
+execution after acceptance; a scripted regression verifies that behavior. The old
+benchmark has not been rerun against the new workflow, so neither a new accuracy
+percentage nor measured improvement is claimed.
+
+Source: local `bench/results/haiku_full/summary.json` and `runs.jsonl`. Benchmark
+fixtures may override data per scenario; their results are not the ten default-data
+demo requests listed in section 1.6. Benchmark artifacts remain outside the submission
+repository unless included separately by the owner.
+
+### 5.3 Current automated checks
+
+Latest local verification: **142 tests passed**; `ruff check .` passed.
+
+- Tool tests cover ordinary lookups, unknown keys, normalization, refresh boundaries,
+  empty ticket fields, sequential IDs, and persisted ticket contents.
+- Workflow tests use scripted model responses to exercise approval evidence, denial
+  finalization, multiple items, duplicate submissions, isolated tickets and facts,
+  budget reservations, rejected drafts and partial failures. They test application
+  behavior, not a real model's decision accuracy.
+- Adapter tests check Foundry message translation and real local MCP stdio discovery
+  and calls. Core-boundary tests block external SDK imports.
+- CI installs with `uv sync --locked`, runs `ruff check .`, then `pytest -v`.
+  A passing remote run for the current working tree has not been verified.
+- Submission issue: `tests/test_live_cli_eval.py` and `tests/test_tool_count_eval.py`
+  import the ignored `bench/` package. If those tests are submitted without that
+  package, collection will fail. Keep benchmark tests with the separate benchmark
+  project or otherwise reconcile the CI test set before submission.
 
 ## 6. Run
 
 ```bash
 uv sync
 uv run pytest -q
-uv run python -m equipment_mcp.server            # stdio, or HTTP if MCP_SERVER_URL is set
+uv run ruff check .
+uv run python -m equipment_mcp.server
 uv run python scripts/smoke_client.py E001
-export ANTHROPIC_FOUNDRY_API_KEY=... ANTHROPIC_FOUNDRY_RESOURCE=...
 uv run python -m equipment_mcp.agent
 ```
+
+Configure Foundry credentials through the environment or local `.env` before running
+an agent demo. `FOUNDRY_MODEL` selects the deployment; the code default is
+`claude-opus-5-5`, and the recorded benchmark used `claude-haiku-5-5`.
+`MCP_SERVER_URL` selects Streamable HTTP when set; otherwise the client starts a local
+stdio server. The child is explicitly passed `--stdio`. The CLI entry point is
+`agent.py`, which loads `.env` and calls `app.main()`; importing `app.py` starts nothing.

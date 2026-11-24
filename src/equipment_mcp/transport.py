@@ -1,5 +1,3 @@
-"""Pick the MCP transport: Streamable HTTP when MCP_SERVER_URL is set, stdio otherwise."""
-
 from __future__ import annotations
 
 import os
@@ -27,10 +25,16 @@ def http_settings(url: str) -> dict[str, Any]:
     }
 
 
+def stdio_params() -> StdioServerParameters:
+    # --stdio keeps the child on stdio even if .env sets MCP_SERVER_URL
+    return StdioServerParameters(
+        command=sys.executable, args=["-m", "equipment_mcp.server", "--stdio"]
+    )
+
+
 def open_transport():
     """Async context manager yielding (read, write) for ClientSession."""
     url = server_url()
     if url:
         return streamable_http_client(url)
-    params = StdioServerParameters(command=sys.executable, args=["-m", "equipment_mcp.server"])
-    return stdio_client(params)
+    return stdio_client(stdio_params())

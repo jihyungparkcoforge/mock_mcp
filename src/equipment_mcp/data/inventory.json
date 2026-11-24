@@ -1,0 +1,18 @@
+{
+  "laptop": {
+    "in_stock": 6,
+    "restock_date": null
+  },
+  "monitor": {
+    "in_stock": 14,
+    "restock_date": null
+  },
+  "headset": {
+    "in_stock": 0,
+    "restock_date": "2026-12-15"
+  },
+  "workstation": {
+    "in_stock": 2,
+    "restock_date": null
+  }
+}

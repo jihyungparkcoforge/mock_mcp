@@ -4,9 +4,13 @@ from datetime import date, datetime
 import pytest
 
 from equipment_mcp.tools import (
+    check_inventory,
     check_request_eligibility,
     flag_for_human_review,
+    get_department_budget,
     get_employee_info,
+    get_item_catalog,
+    get_open_requests,
     get_policy_limits,
 )
 
@@ -58,6 +62,7 @@ class TestGetPolicyLimits:
             "items": {
                 "monitor": {"max_quantity": 1, "refresh_years": 3},
                 "laptop": {"max_quantity": 1, "refresh_years": 4},
+                "headset": {"max_quantity": 1, "refresh_years": 2},
             },
         }
 
@@ -208,3 +213,91 @@ class TestFlagForHumanReview:
             "error": "request_required"
         }
         assert not log.exists() or log.read_text() == ""
+
+
+class TestEmployeeStatusFields:
+    def test_includes_department_and_status(self):
+        info = get_employee_info("E001", today=TODAY)
+        assert info["department"] == "Finance"
+        assert info["employment_status"] == "active"
+
+    @pytest.mark.parametrize("eid,status", [("E006", "on_leave"), ("E007", "leaving")])
+    def test_non_active_statuses(self, eid, status):
+        assert get_employee_info(eid, today=TODAY)["employment_status"] == status
+
+
+class TestGetItemCatalog:
+    def test_returns_price_and_limit(self):
+        assert get_item_catalog("laptop") == {
+            "item": "laptop",
+            "price": 1400,
+            "currency": "USD",
+            "auto_approve_limit": 2000,
+        }
+
+    def test_item_is_normalized(self):
+        assert get_item_catalog("  Workstation ")["price"] == 3200
+
+    def test_unknown_item(self):
+        assert get_item_catalog("webcam") == {"error": "item_not_in_catalog", "item": "webcam"}
+
+
+class TestGetDepartmentBudget:
+    def test_returns_remaining(self):
+        assert get_department_budget("Finance") == {
+            "department": "Finance",
+            "annual_budget": 20000,
+            "spent": 8200,
+            "remaining": 11800,
+        }
+
+    def test_name_is_case_insensitive(self):
+        assert get_department_budget(" operations ")["remaining"] == 150
+
+    def test_unknown_department(self):
+        assert get_department_budget("Legal") == {
+            "error": "department_not_found",
+            "department": "Legal",
+            "available_departments": ["Engineering", "Finance", "Operations", "Sales"],
+        }
+
+
+class TestCheckInventory:
+    def test_in_stock(self):
+        assert check_inventory("monitor") == {
+            "item": "monitor",
+            "in_stock": 14,
+            "restock_date": None,
+        }
+
+    def test_out_of_stock_has_restock_date(self):
+        r = check_inventory("Headset")
+        assert r["in_stock"] == 0
+        assert r["restock_date"] == "2026-12-15"
+
+    def test_unknown_item(self):
+        assert check_inventory("webcam") == {"error": "item_not_in_inventory", "item": "webcam"}
+
+
+class TestGetOpenRequests:
+    def test_lists_open_requests(self):
+        assert get_open_requests("e002") == {
+            "employee_id": "E002",
+            "open_requests": [
+                {
+                    "request_id": "ORD-1042",
+                    "item": "monitor",
+                    "status": "awaiting_delivery",
+                    "created": "2026-11-10",
+                }
+            ],
+        }
+
+    def test_employee_without_open_requests(self):
+        assert get_open_requests("E001") == {"employee_id": "E001", "open_requests": []}
+
+    def test_unknown_employee(self):
+        assert get_open_requests("E999") == {
+            "error": "employee_not_found",
+            "employee_id": "E999",
+        }

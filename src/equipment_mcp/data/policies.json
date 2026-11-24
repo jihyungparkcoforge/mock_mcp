@@ -1,14 +1,48 @@
 {
   "standard": {
-    "monitor": {"max_quantity": 1, "refresh_years": 3},
-    "laptop":  {"max_quantity": 1, "refresh_years": 4}
+    "monitor": {
+      "max_quantity": 1,
+      "refresh_years": 3
+    },
+    "laptop": {
+      "max_quantity": 1,
+      "refresh_years": 4
+    },
+    "headset": {
+      "max_quantity": 1,
+      "refresh_years": 2
+    }
   },
   "manager": {
-    "monitor": {"max_quantity": 2, "refresh_years": 2},
-    "laptop":  {"max_quantity": 1, "refresh_years": 2}
+    "monitor": {
+      "max_quantity": 2,
+      "refresh_years": 2
+    },
+    "laptop": {
+      "max_quantity": 1,
+      "refresh_years": 2
+    },
+    "headset": {
+      "max_quantity": 1,
+      "refresh_years": 2
+    }
   },
   "engineer": {
-    "monitor": {"max_quantity": 2, "refresh_years": 3},
-    "laptop":  {"max_quantity": 1, "refresh_years": 3}
+    "monitor": {
+      "max_quantity": 2,
+      "refresh_years": 3
+    },
+    "laptop": {
+      "max_quantity": 1,
+      "refresh_years": 3
+    },
+    "headset": {
+      "max_quantity": 1,
+      "refresh_years": 2
+    },
+    "workstation": {
+      "max_quantity": 1,
+      "refresh_years": 4
+    }
   }
 }

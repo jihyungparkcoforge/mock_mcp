@@ -1,14 +1,16 @@
 import pytest
 
-from equipment_mcp.agent import (
+from equipment_mcp.formatting import format_trace_step
+from equipment_mcp.models import TraceStep
+from equipment_mcp.policy import (
     MAX_REFLECTION_REJECTIONS,
-    SUBMIT_DECISION_TOOL,
     VALID_DECISIONS,
-    TraceStep,
     apply_reflection,
-    format_trace_step,
+    approval_gaps,
+    record_fact,
     validate_decision,
 )
+from equipment_mcp.prompts import SUBMIT_DECISION_TOOL
 
 
 class TestFormatTraceStep:
@@ -26,7 +28,13 @@ class TestSubmitDecisionTool:
         schema = SUBMIT_DECISION_TOOL["input_schema"]
         assert SUBMIT_DECISION_TOOL["strict"] is True
         assert schema["additionalProperties"] is False
-        assert set(schema["required"]) == {"decision", "response", "ticket_id"}
+        assert set(schema["required"]) == {
+            "request_id",
+            "decision",
+            "item",
+            "response",
+            "ticket_id",
+        }
 
 
 class TestValidateDecision:
@@ -98,3 +106,120 @@ class TestApplyReflection:
         review = {"verdict": "revised", "issues": ["x"], "revised_response": "Fixed."}
         apply_reflection(draft, review, rejections=0)
         assert draft["response"] == "Approved."
+
+
+def facts_for_approval(**overrides):
+    """Facts as recorded after every approval check passed for E001's laptop."""
+    facts = {}
+    observed = {
+        "get_employee_info": {
+            "employee_id": "E001",
+            "department": "Finance",
+            "employment_status": "active",
+        },
+        "check_request_eligibility": {
+            "employee_id": "E001",
+            "item": "laptop",
+            "eligible": True,
+            "status": "eligible_refresh",
+        },
+        "get_open_requests": {"employee_id": "E001", "open_requests": []},
+        "get_item_catalog": {"item": "laptop", "price": 1400, "auto_approve_limit": 2000},
+        "get_department_budget": {"department": "Finance", "remaining": 11800},
+        "check_inventory": {"item": "laptop", "in_stock": 6, "restock_date": None},
+    }
+    observed.update(overrides)
+    for tool, result in observed.items():
+        if result is not None:
+            record_fact(facts, tool, result)
+    return facts
+
+
+class TestApprovalGaps:
+    def test_all_checks_passed(self):
+        assert approval_gaps("laptop", facts_for_approval()) == []
+
+    def test_item_name_is_normalized(self):
+        assert approval_gaps(" Laptop ", facts_for_approval()) == []
+
+    @pytest.mark.parametrize(
+        "missing",
+        [
+            "get_employee_info",
+            "check_request_eligibility",
+            "get_open_requests",
+            "get_item_catalog",
+            "get_department_budget",
+            "check_inventory",
+        ],
+    )
+    def test_each_missing_check_blocks_approval(self, missing):
+        gaps = approval_gaps("laptop", facts_for_approval(**{missing: None}))
+        assert len(gaps) == 1
+
+    def test_not_eligible(self):
+        facts = facts_for_approval(
+            check_request_eligibility={
+                "employee_id": "E001",
+                "item": "laptop",
+                "eligible": False,
+                "status": "not_eligible",
+            }
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_inactive_employee(self):
+        facts = facts_for_approval(
+            get_employee_info={
+                "employee_id": "E001",
+                "department": "Finance",
+                "employment_status": "on_leave",
+            }
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_open_request_for_same_item(self):
+        open_req = {"request_id": "ORD-1", "item": "laptop", "status": "awaiting_delivery"}
+        facts = facts_for_approval(
+            get_open_requests={"employee_id": "E001", "open_requests": [open_req]}
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_open_request_for_other_item_is_fine(self):
+        open_req = {"request_id": "ORD-1", "item": "monitor", "status": "awaiting_delivery"}
+        facts = facts_for_approval(
+            get_open_requests={"employee_id": "E001", "open_requests": [open_req]}
+        )
+        assert approval_gaps("laptop", facts) == []
+
+    def test_price_over_auto_approve_limit(self):
+        facts = facts_for_approval(
+            get_item_catalog={"item": "laptop", "price": 2500, "auto_approve_limit": 2000}
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_budget_below_price(self):
+        facts = facts_for_approval(
+            get_department_budget={"department": "Finance", "remaining": 100}
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_budget_of_other_department_does_not_count(self):
+        facts = facts_for_approval(
+            get_department_budget={"department": "Sales", "remaining": 99999}
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_out_of_stock(self):
+        facts = facts_for_approval(
+            check_inventory={"item": "laptop", "in_stock": 0, "restock_date": "2026-12-15"}
+        )
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_error_results_are_not_recorded(self):
+        facts = facts_for_approval(get_item_catalog={"error": "item_not_in_catalog"})
+        assert len(approval_gaps("laptop", facts)) == 1
+
+    def test_gaps_are_readable(self):
+        gaps = approval_gaps("laptop", {})
+        assert gaps and all(isinstance(g, str) and g.strip() for g in gaps)

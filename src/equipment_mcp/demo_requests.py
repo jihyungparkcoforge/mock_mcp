@@ -19,4 +19,34 @@ DEMO_REQUESTS = [
         "request": "I dropped my laptop and the screen is cracked. I need a new one.",
         "expected": "escalate",  # inside 2y cycle (2025-09-01) but damage reason
     },
+    {
+        "employee_id": "E002",
+        "request": "Could I get another monitor? I want a dual-screen setup.",
+        "expected": "deny",  # eligible, but open request ORD-1042 for a monitor exists
+    },
+    {
+        "employee_id": "E007",
+        "request": "My laptop is getting old, can I get a new one?",
+        "expected": "deny",  # refresh due, but employee is leaving
+    },
+    {
+        "employee_id": "E005",
+        "request": "I don't have a monitor yet. Can I get one?",
+        "expected": "escalate",  # eligible, but Operations budget 150 < price 300
+    },
+    {
+        "employee_id": "E004",
+        "request": "I need a headset for meetings.",
+        "expected": "escalate",  # eligible, but headset out of stock
+    },
+    {
+        "employee_id": "E004",
+        "request": "Can I get a workstation for model training?",
+        "expected": "escalate",  # eligible, but price 3200 > auto-approve limit 2000
+    },
+    {
+        "employee_id": "E006",
+        "request": "My laptop is past its refresh date, please replace it.",
+        "expected": "escalate",  # refresh due, but employee is on leave
+    },
 ]
