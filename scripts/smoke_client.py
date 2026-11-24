@@ -10,23 +10,20 @@ import asyncio
 import sys
 
 from dotenv import load_dotenv
-from mcp import ClientSession
+from mcp import Client
 
-from equipment_mcp.transport import open_transport, server_url
+from equipment_mcp.transport import server_url, stdio_params
 
 
 async def main(employee_id: str) -> None:
     print("Transport:", server_url() or "stdio")
-    async with open_transport() as (read, write):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
+    async with Client(server_url() or stdio_params(), mode="legacy") as client:
+        tools = await client.list_tools()
+        print("Registered tools:", [t.name for t in tools.tools])
 
-            tools = await session.list_tools()
-            print("Registered tools:", [t.name for t in tools.tools])
-
-            result = await session.call_tool("get_employee_info", {"employee_id": employee_id})
-            print(f"get_employee_info({employee_id!r}) -> is_error={result.is_error}")
-            print(result.content[0].text)
+        result = await client.call_tool("get_employee_info", {"employee_id": employee_id})
+        print(f"get_employee_info({employee_id!r}) -> is_error={result.is_error}")
+        print(result.content[0].text)
 
 
 if __name__ == "__main__":

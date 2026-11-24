@@ -93,7 +93,7 @@ FACT_TOOLS = {
 
 
 def record_fact(facts: dict[str, Any], tool_name: str, result: dict[str, Any]) -> None:
-    """Keep successful results of the approval-relevant tools, keyed for approval_gaps."""
+    """Keep successful tool facts for per-submission budget accounting."""
     key = FACT_TOOLS.get(tool_name)
     if key is None or "error" in result:
         return
@@ -103,64 +103,6 @@ def record_fact(facts: dict[str, Any], tool_name: str, result: dict[str, Any]) -
         facts.setdefault(key, {})[result["department"]] = result
     else:
         facts.setdefault(key, {})[result["item"]] = result
-
-
-def approval_gaps(
-    item: str, facts: dict[str, Any], reserved_budget: dict[str, float] | None = None
-) -> list[str]:
-    """Reasons an approval of `item` is not backed by what the tools returned."""
-    item = item.strip().lower()
-    gaps = []
-
-    employee = facts.get("employee")
-    if employee is None:
-        gaps.append("employee info not checked")
-    elif employee["employment_status"] != "active":
-        gaps.append(f"employment_status is {employee['employment_status']}")
-
-    eligibility = facts.get("eligibility", {}).get(item)
-    if eligibility is None:
-        gaps.append(f"eligibility not checked for {item}")
-    elif eligibility["eligible"] is not True:
-        gaps.append(f"eligibility status is {eligibility['status']}")
-
-    open_requests = facts.get("open_requests")
-    if open_requests is None:
-        gaps.append("open requests not checked")
-    else:
-        for req in open_requests["open_requests"]:
-            if req["item"] == item:
-                gaps.append(f"open request {req['request_id']} already exists for {item}")
-
-    catalog = facts.get("catalog", {}).get(item)
-    if catalog is None:
-        gaps.append(f"price not checked for {item}")
-    elif catalog["price"] > catalog["auto_approve_limit"]:
-        gaps.append(
-            f"price {catalog['price']} is above the auto-approve limit "
-            f"{catalog['auto_approve_limit']}"
-        )
-
-    if employee is not None:
-        budget = facts.get("budget", {}).get(employee["department"])
-        if budget is None:
-            gaps.append(f"budget not checked for department {employee['department']}")
-        elif catalog is not None:
-            reserved = (reserved_budget or {}).get(employee["department"], 0)
-            available = budget["remaining"] - reserved
-            if available < catalog["price"]:
-                gaps.append(
-                    f"remaining budget {available} after earlier approvals "
-                    f"is below price {catalog['price']}"
-                )
-
-    inventory = facts.get("inventory", {}).get(item)
-    if inventory is None:
-        gaps.append(f"inventory not checked for {item}")
-    elif inventory["in_stock"] <= 0:
-        gaps.append(f"{item} is out of stock")
-
-    return gaps
 
 
 def apply_reflection(

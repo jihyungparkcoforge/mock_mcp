@@ -1,12 +1,24 @@
-"""Plain-text serialization helpers."""
+"""Text serialization and optional terminal trace colors."""
 
 import json
 from typing import Any
 
 from equipment_mcp.models import TraceStep
 
+TRACE_COLORS = {
+    "Requests": "34",  # Blue
+    "Execution": "34",  # Blue
+    "Thought": "36",  # Cyan
+    "Action": "33",  # Yellow
+    "Observation": "32",  # Green
+    "Reflection": "35",  # Magenta
+}
 
-def format_trace_step(step: TraceStep) -> str:
+
+def format_trace_step(step: TraceStep, *, color: bool = False) -> str:
+    code = TRACE_COLORS.get(step.kind) if color else None
+    if code:
+        return f"\033[1;{code}m{step.kind}:\033[0;{code}m {step.content}\033[0m"
     return step.kind + ": " + step.content
 
 
