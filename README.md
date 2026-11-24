@@ -105,6 +105,10 @@ uv run pytest
 uv run ruff check src tests
 ```
 
+Benchmark-only tests live under the ignored `bench/tests/` directory and are excluded
+from the default test suite. When the local benchmark files are available, run them
+separately with `uv run python -m pytest bench/tests -q`.
+
 Workflow tests use scripted model responses, including the two-submission regression,
 multiple items, isolated tickets and evidence, combined budget limits, and partial
 failure. Separate adapter tests check Foundry message translation and a real local

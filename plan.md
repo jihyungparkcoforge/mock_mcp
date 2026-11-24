@@ -277,7 +277,9 @@ repository unless included separately by the owner.
 
 ### 5.3 Current automated checks
 
-Latest local verification: **142 tests passed**; `ruff check .` passed.
+Latest local verification: **128 submission tests passed** and `ruff check .` passed
+in a temporary copy containing only the remaining Git-tracked files, without `bench/`.
+The separate local benchmark suite has **14 passing tests**.
 
 - Tool tests cover ordinary lookups, unknown keys, normalization, refresh boundaries,
   empty ticket fields, sequential IDs, and persisted ticket contents.
@@ -289,10 +291,10 @@ Latest local verification: **142 tests passed**; `ruff check .` passed.
   and calls. Core-boundary tests block external SDK imports.
 - CI installs with `uv sync --locked`, runs `ruff check .`, then `pytest -v`.
   A passing remote run for the current working tree has not been verified.
-- Submission issue: `tests/test_live_cli_eval.py` and `tests/test_tool_count_eval.py`
-  import the ignored `bench/` package. If those tests are submitted without that
-  package, collection will fail. Keep benchmark tests with the separate benchmark
-  project or otherwise reconcile the CI test set before submission.
+- Benchmark tests `test_live_cli_eval.py` and `test_tool_count_eval.py` have been moved
+  from `tests/` to ignored `bench/tests/`. Commit their removal from the tracked test
+  directory so CI no longer depends on the local benchmark package. Run them locally
+  with `uv run python -m pytest bench/tests -q` when benchmark files are available.
 
 ## 6. Run
 
