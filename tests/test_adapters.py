@@ -196,9 +196,7 @@ def test_mcp_adapter_round_trip_with_local_stdio_server():
                     await session.initialize()
                     executor = await McpToolExecutor.discover(session)
                     assert len(executor.definitions) == 8
-                    catalog = next(
-                        t for t in executor.definitions if t.name == "get_item_catalog"
-                    )
+                    catalog = next(t for t in executor.definitions if t.name == "get_item_catalog")
                     assert catalog.parameters["properties"]["item"]["description"]
                     result = await executor.call("get_item_catalog", {"item": "laptop"})
                     assert result["item"] == "laptop"

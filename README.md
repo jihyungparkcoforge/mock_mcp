@@ -77,13 +77,15 @@ Business data access also works independently of either SDK or a running agent:
 from equipment_mcp.equipment import get_item_catalog
 from equipment_mcp.repositories import MemoryEquipmentData
 
-data = MemoryEquipmentData({
-    "catalog": {
-        "items": {"headset": {"price": 120}},
-        "currency": "USD",
-        "auto_approve_limit": 2000,
-    },
-})
+data = MemoryEquipmentData(
+    {
+        "catalog": {
+            "items": {"headset": {"price": 120}},
+            "currency": "USD",
+            "auto_approve_limit": 2000,
+        },
+    }
+)
 catalog = get_item_catalog("headset", data=data)
 ```
 
