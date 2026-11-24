@@ -106,7 +106,7 @@ class EquipmentWorkflow:
         self,
         request: str,
         employee_id: str,
-        max_steps: int = 8,
+        max_steps: int = 14,
         *,
         submission_id: str | None = None,
     ) -> AgentResult:
