@@ -1,4 +1,4 @@
-"""Application values; no provider SDKs or I/O."""
+"""Application values"""
 
 from __future__ import annotations
 

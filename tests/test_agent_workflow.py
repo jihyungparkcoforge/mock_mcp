@@ -400,6 +400,52 @@ def test_review_rejections_are_per_request_and_forced_tickets_are_separate():
     assert len(backend.tickets) == 2 and not client.script
 
 
+@pytest.mark.parametrize("max_steps", [1, 3])
+def test_step_limit_stops_without_an_extra_call_or_automatic_ticket(max_steps):
+    original = "I need a headset."
+    engine, client, backend = build(
+        [
+            plan("headset", text=original),
+            *[("agent", []) for _ in range(max_steps)],
+            ("agent", [submit("r1", "headset")]),
+            review(),
+        ]
+    )
+    with pytest.raises(IncompleteRequestsError) as caught:
+        asyncio.run(engine.run(original, "E001", max_steps=max_steps))
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == f"No valid decision for r1 after {max_steps} steps"
+    assert caught.value.pending_request_ids == ["r1"]
+    assert caught.value.result.decisions == []
+    assert caught.value.result.reflections == []
+    assert [phase for phase, _ in client.calls] == ["split"] + ["agent"] * max_steps
+    assert len(client.script) == 2  # The next action and review must remain unconsumed.
+    assert not backend.calls and not backend.tickets
+
+
+def test_step_limit_is_per_item_and_accepts_decision_on_last_turn():
+    original = "I need a headset and a laptop."
+    script = [plan("headset", "laptop", text=original)]
+    for rid, item in [("r1", "headset"), ("r2", "laptop")]:
+        script += [facts(item), ("agent", [submit(rid, item)]), review()]
+    engine, client, _ = build(script)
+    result = asyncio.run(engine.run(original, "E001", max_steps=2))
+    assert [(d.request_id, d.decision) for d in result.decisions] == [
+        ("r1", "approve"),
+        ("r2", "approve"),
+    ]
+    assert [phase for phase, _ in client.calls] == [
+        "split",
+        "agent",
+        "agent",
+        "reflection",
+        "agent",
+        "agent",
+        "reflection",
+    ]
+    assert not client.script
+
+
 def test_later_failure_preserves_completed_decisions():
     original = "I need a headset and a laptop."
     engine, client, _ = build(
