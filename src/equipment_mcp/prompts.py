@@ -2,9 +2,37 @@
 
 from typing import Any
 
-from equipment_mcp.policy import DECISION_RULES, VALID_DECISIONS
+from equipment_mcp.policy import VALID_DECISIONS
 
 MAX_TOKENS = 16000
+
+
+DECISION_RULES = """Approve only when every one of these holds:
+- the role policy allows the item (eligibility status eligible_new or eligible_refresh)
+- the employee's employment_status is active
+- there is no open request for the same item
+- the item's price is within the auto-approve limit
+- the department's remaining budget covers the price
+- the item is in stock
+
+Deny when any of these holds:
+- eligibility status not_eligible and the request gives no damage or failure reason
+  (give the next eligible date)
+- the employee is leaving
+- an open request for the same item already exists (give its request ID)
+- employee_not_found (ask the employee to confirm their ID)
+
+Escalate when any of these holds:
+- not_eligible but the request says the device is broken, damaged, or not working
+- the item is not in policy or not in the catalog
+- the price is above the auto-approve limit
+- the remaining department budget is below the price
+- the item is out of stock
+- the employee is on leave
+- role_not_found, missing data, or anything the data cannot settle
+
+If both a deny reason and an escalate reason apply, deny.
+If the data does not clearly support approve or deny, escalate. Never guess."""
 
 
 SYSTEM_PROMPT = f"""You handle internal IT equipment requests for employees.

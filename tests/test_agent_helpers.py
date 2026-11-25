@@ -23,10 +23,13 @@ class TestSubmitDecisionTool:
         assert props["decision"]["enum"] == list(VALID_DECISIONS)
 
     def test_schema_is_strict(self):
-        schema = SUBMIT_DECISION_TOOL["input_schema"]
         assert SUBMIT_DECISION_TOOL["strict"] is True
-        assert schema["additionalProperties"] is False
-        assert set(schema["required"]) == {
+
+    def test_schema_rejects_additional_properties(self):
+        assert SUBMIT_DECISION_TOOL["input_schema"]["additionalProperties"] is False
+
+    def test_schema_requires_all_decision_fields(self):
+        assert set(SUBMIT_DECISION_TOOL["input_schema"]["required"]) == {
             "request_id",
             "decision",
             "item",

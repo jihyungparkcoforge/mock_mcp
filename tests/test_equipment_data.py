@@ -27,12 +27,18 @@ def data():
 
 
 class TestGetEmployeeInfo:
-    def test_returns_role_and_profile(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("employee_id", "E001", id="employee_id"),
+            pytest.param("name", "Alice Kim", id="name"),
+            pytest.param("role", "standard", id="role"),
+            pytest.param("hire_date", "2021-02-01", id="hire_date"),
+        ],
+    )
+    def test_returns_role_and_profile(self, data, field, expected):
         info = get_employee_info("E001", today=TODAY, data=data)
-        assert info["employee_id"] == "E001"
-        assert info["name"] == "Alice Kim"
-        assert info["role"] == "standard"
-        assert info["hire_date"] == "2021-02-01"
+        assert info[field] == expected
 
     def test_tenure_in_years_rounded_to_one_decimal(self, data):
         assert get_employee_info("E001", today=TODAY, data=data)["tenure_years"] == 5.8
@@ -97,10 +103,12 @@ class TestGetPolicyLimits:
     def test_result_is_a_copy(self):
         policies = {"standard": {"laptop": {"max_quantity": 1, "refresh_years": 4}}}
 
+        # Return the original dictionary deliberately: a copying repository would
+        # hide a missing defensive copy in the business operation under test.
         class SharedData:
             def read(self, table):
-                assert table == "policies"
-                return policies  # No storage-layer copy to hide a missing business-layer copy.
+                assert table == "policies", f"Unexpected repository table: {table}"
+                return policies
 
         data = SharedData()
         first = get_policy_limits("standard", data=data)
@@ -110,31 +118,49 @@ class TestGetPolicyLimits:
 
 
 class TestCheckRequestEligibility:
-    def test_refresh_due_is_eligible(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("eligible", True, id="eligible"),
+            pytest.param("status", "eligible_refresh", id="status"),
+            pytest.param("currently_held", 1, id="currently_held"),
+            pytest.param("max_quantity", 1, id="max_quantity"),
+            pytest.param("refresh_years", 4, id="refresh_years"),
+            pytest.param("next_eligible_date", None, id="next_eligible_date"),
+        ],
+    )
+    def test_refresh_due_is_eligible(self, data, field, expected):
         # standard laptop: 4y cycle, acquired 2022-01-10 -> due 2026-01-10
         r = check_request_eligibility("E001", "laptop", today=TODAY, data=data)
-        assert r["eligible"] is True
-        assert r["status"] == "eligible_refresh"
-        assert r["currently_held"] == 1
-        assert r["max_quantity"] == 1
-        assert r["refresh_years"] == 4
-        assert r["next_eligible_date"] is None
+        assert r[field] == expected
 
-    def test_at_max_quantity_within_cycle_is_not_eligible(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("eligible", False, id="eligible"),
+            pytest.param("status", "not_eligible", id="status"),
+            pytest.param("currently_held", 1, id="currently_held"),
+            pytest.param("next_eligible_date", "2028-06-01", id="next_eligible_date"),
+        ],
+    )
+    def test_at_max_quantity_within_cycle_is_not_eligible(self, data, field, expected):
         # standard: max 1 monitor, current one acquired 2025-06-01 -> next 2028-06-01
         r = check_request_eligibility("E001", "monitor", today=TODAY, data=data)
-        assert r["eligible"] is False
-        assert r["status"] == "not_eligible"
-        assert r["currently_held"] == 1
-        assert r["next_eligible_date"] == "2028-06-01"
+        assert r[field] == expected
 
-    def test_below_max_quantity_is_eligible_new(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("eligible", True, id="eligible"),
+            pytest.param("status", "eligible_new", id="status"),
+            pytest.param("currently_held", 1, id="currently_held"),
+            pytest.param("max_quantity", 2, id="max_quantity"),
+        ],
+    )
+    def test_below_max_quantity_is_eligible_new(self, data, field, expected):
         # manager: max 2 monitors, holds 1
         r = check_request_eligibility("E002", "monitor", today=TODAY, data=data)
-        assert r["eligible"] is True
-        assert r["status"] == "eligible_new"
-        assert r["currently_held"] == 1
-        assert r["max_quantity"] == 2
+        assert r[field] == expected
 
     def test_holding_none_is_eligible_new(self, data):
         r = check_request_eligibility("E004", "monitor", today=TODAY, data=data)
@@ -164,7 +190,15 @@ class TestCheckRequestEligibility:
             ("2023-11-23", "2026-10-01"),
         ],
     )
-    def test_refresh_uses_oldest_unit(self, dates):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("status", "eligible_refresh", id="status"),
+            pytest.param("eligible", True, id="eligible"),
+            pytest.param("currently_held", 2, id="currently_held"),
+        ],
+    )
+    def test_refresh_uses_oldest_unit(self, dates, field, expected):
         data = MemoryEquipmentData(
             {
                 "employees": {
@@ -180,9 +214,7 @@ class TestCheckRequestEligibility:
         )
         # Only the older monitor is due; list order must not affect eligibility.
         r = check_request_eligibility("E001", "monitor", today=TODAY, data=data)
-        assert r["status"] == "eligible_refresh"
-        assert r["eligible"] is True
-        assert r["currently_held"] == 2
+        assert r[field] == expected
 
     @pytest.mark.parametrize(
         "today, status, due",
@@ -208,36 +240,59 @@ class TestCheckRequestEligibility:
         assert result["eligible"] is (status == "eligible_refresh")
         assert result["next_eligible_date"] == due
 
-    def test_employee_role_without_policy(self):
+    @pytest.fixture
+    def missing_role_policy(self):
         data = MemoryEquipmentData(
             {
                 "employees": {"E001": {"role": "contractor", "equipment": []}},
                 "policies": {},
             }
         )
-        result = check_request_eligibility("E001", "laptop", today=TODAY, data=data)
-        assert result["employee_id"] == "E001"
-        assert result["item"] == "laptop"
-        assert result["status"] == "role_not_found"
-        assert result["eligible"] is None
-        assert "contractor" in result["reason"]
+        return check_request_eligibility("E001", "laptop", today=TODAY, data=data)
 
-    def test_item_not_in_policy(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            ("employee_id", "E001"),
+            ("item", "laptop"),
+            ("status", "role_not_found"),
+            ("eligible", None),
+        ],
+    )
+    def test_employee_role_without_policy(self, missing_role_policy, field, expected):
+        assert missing_role_policy[field] == expected
+
+    def test_missing_role_reason_names_role(self, missing_role_policy):
+        assert "contractor" in missing_role_policy["reason"]
+
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("eligible", None, id="eligible"),
+            pytest.param("status", "not_in_policy", id="status"),
+            pytest.param("item", "webcam", id="item"),
+        ],
+    )
+    def test_item_not_in_policy(self, data, field, expected):
         r = check_request_eligibility("E003", "webcam", today=TODAY, data=data)
-        assert r["eligible"] is None
-        assert r["status"] == "not_in_policy"
-        assert r["item"] == "webcam"
+        assert r[field] == expected
 
     def test_unknown_employee(self, data):
         r = check_request_eligibility("E999", "laptop", today=TODAY, data=data)
         assert r["eligible"] is None
         assert r["status"] == "employee_not_found"
 
-    def test_inputs_are_normalized(self, data):
+    @pytest.mark.parametrize(
+        "field,expected",
+        [
+            pytest.param("employee_id", "E001", id="employee_id"),
+            pytest.param("item", "laptop", id="item"),
+            pytest.param("status", "eligible_refresh", id="status"),
+        ],
+    )
+    def test_inputs_are_normalized(self, data, field, expected):
         r = check_request_eligibility(" e001 ", "  Laptop ", today=TODAY, data=data)
-        assert r["employee_id"] == "E001"
-        assert r["item"] == "laptop"
-        assert r["status"] == "eligible_refresh"
+        assert r[field] == expected
 
     @pytest.mark.parametrize(
         "employee_id,item",

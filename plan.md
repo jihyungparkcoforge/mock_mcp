@@ -39,7 +39,7 @@ Other data:
 - Inventory (`inventory.json`): headset is out of stock (restock 2026-12-15).
 - Open requests (`open_requests.json`): E002 has ORD-1042 (monitor, awaiting delivery).
 
-### 1.3 Decision rules (`DECISION_RULES` in `policy.py`)
+### 1.3 Decision rules (`DECISION_RULES` in `prompts.py`)
 Approve only when **all** hold:
 1. eligibility status is `eligible_new` or `eligible_refresh`
 2. `employment_status` is `active`
@@ -275,10 +275,11 @@ expiry rules. This neither caches decisions nor replaces any reflection call.
 src/equipment_mcp/
   agent.py          --demo/--interactive CLI, input and result display
   app.py            settings, client/session lifetime, workflow assembly
-  workflow.py       per-item ReAct loop, evidence, retries, budget reservations
+  workflow.py       submission and per-item orchestration, tool scheduling, review handling
+  workflow_state.py run and item state, trace recording, budget reservations
   models.py         application dataclasses and errors
   ports.py          model, tool, data and ticket interfaces
-  policy.py         decision rules, structural validation, fact recording, review outcomes
+  policy.py         structural validation, fact recording, review outcomes
   prompts.py        Foundry prompts and structured-output schemas
   foundry.py        model adapter, prompt caching and provider conversation history
   mcp_executor.py   SDK tool wrappers and JSON facts for the workflow
