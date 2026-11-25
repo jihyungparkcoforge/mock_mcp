@@ -15,7 +15,9 @@ from equipment_mcp.server import create_server
 
 def test_concurrent_http_sessions_allocate_and_reuse_tickets(tmp_path):
     path = tmp_path / "tickets.sqlite3"
-    server = create_server(MemoryEquipmentData({}), SqliteTicketStore(path))
+    server = create_server(
+        MemoryEquipmentData({"employees": {"E001": {}}}), SqliteTicketStore(path)
+    )
     app = server.streamable_http_app(json_response=True, stateless_http=True)
 
     async def batch(keys):

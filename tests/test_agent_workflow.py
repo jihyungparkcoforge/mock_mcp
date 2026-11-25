@@ -17,7 +17,7 @@ from equipment_mcp.models import (
     ToolCall,
 )
 from equipment_mcp.policy import MAX_REFLECTION_REJECTIONS
-from equipment_mcp.repositories import SqliteTicketStore
+from equipment_mcp.repositories import MemoryEquipmentData, SqliteTicketStore
 from equipment_mcp.workflow import EquipmentWorkflow
 
 IDS = itertools.count()
@@ -160,7 +160,9 @@ def test_retry_keys_are_host_owned_and_stable_when_items_are_reordered(tmp_path)
             if name == "flag_for_human_review":
                 self.calls.append((name, copy.deepcopy(args)))
                 return flag_for_human_review(
-                    **args, tickets=SqliteTicketStore(tmp_path / "tickets.sqlite3")
+                    **args,
+                    data=MemoryEquipmentData({"employees": {"E001": {}}}),
+                    tickets=SqliteTicketStore(tmp_path / "tickets.sqlite3"),
                 )
             return await super().call(name, args)
 

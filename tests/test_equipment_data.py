@@ -249,10 +249,41 @@ class TestCheckRequestEligibility:
 
 
 class TestFlagForHumanReview:
-    def test_returns_ticket(self, tmp_path):
+    @pytest.mark.parametrize("employee_id", ["E999", " e999 ", "   "])
+    @pytest.mark.parametrize("existing_database", [False, True])
+    def test_unknown_employee_is_rejected_without_writing(
+        self, tmp_path, employee_id, existing_database
+    ):
+        data = MemoryEquipmentData({"employees": {"E001": {}}})
+        log = tmp_path / "tickets.sqlite3"
+        tickets = SqliteTicketStore(log)
+        before = []
+        if existing_database:
+            flag_for_human_review(
+                "E001", "Laptop", "Needs review", data=data, tickets=tickets, now=NOW
+            )
+            with sqlite3.connect(log) as connection:
+                before = connection.execute("SELECT id, payload FROM tickets").fetchall()
+
+        assert flag_for_human_review(
+            employee_id, "Laptop", "Needs review", data=data, tickets=tickets, now=NOW
+        ) == {"error": "employee_not_found", "employee_id": employee_id.strip().upper()}
+
+        if existing_database:
+            with sqlite3.connect(log) as connection:
+                assert connection.execute("SELECT id, payload FROM tickets").fetchall() == before
+        else:
+            assert not log.exists()
+
+    def test_returns_ticket(self, tmp_path, data):
         log = tmp_path / "tickets.sqlite3"
         t = flag_for_human_review(
-            "e003", "4K webcam", "Item not in policy", tickets=SqliteTicketStore(log), now=NOW
+            "e003",
+            "4K webcam",
+            "Item not in policy",
+            data=data,
+            tickets=SqliteTicketStore(log),
+            now=NOW,
         )
         assert t == {
             "ticket_id": "ESC-0001",
@@ -263,39 +294,44 @@ class TestFlagForHumanReview:
             "created_at": "2026-11-23T10:00:00",
         }
 
-    def test_writes_ticket_to_database(self, tmp_path):
+    def test_writes_ticket_to_database(self, tmp_path, data):
         log = tmp_path / "tickets.sqlite3"
         t = flag_for_human_review(
-            "E003", "4K webcam", "Item not in policy", tickets=SqliteTicketStore(log), now=NOW
+            "E003",
+            "4K webcam",
+            "Item not in policy",
+            data=data,
+            tickets=SqliteTicketStore(log),
+            now=NOW,
         )
         with sqlite3.connect(log) as connection:
             rows = connection.execute("SELECT id, payload FROM tickets").fetchall()
         assert len(rows) == 1
         assert {**json.loads(rows[0][1]), "ticket_id": f"ESC-{rows[0][0]:04d}"} == t
 
-    def test_ticket_ids_are_sequential_and_appended(self, tmp_path):
+    def test_ticket_ids_are_sequential_and_appended(self, tmp_path, data):
         log = tmp_path / "tickets.sqlite3"
         flag_for_human_review(
-            "E003", "webcam", "not in policy", tickets=SqliteTicketStore(log), now=NOW
+            "E003", "webcam", "not in policy", data=data, tickets=SqliteTicketStore(log), now=NOW
         )
         second = flag_for_human_review(
-            "E002", "laptop", "cracked screen", tickets=SqliteTicketStore(log), now=NOW
+            "E002", "laptop", "cracked screen", data=data, tickets=SqliteTicketStore(log), now=NOW
         )
         assert second["ticket_id"] == "ESC-0002"
         with sqlite3.connect(log) as connection:
             assert connection.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 2
 
-    def test_blank_reason_is_rejected_and_not_written(self, tmp_path):
+    def test_blank_reason_is_rejected_and_not_written(self, tmp_path, data):
         log = tmp_path / "tickets.sqlite3"
         assert flag_for_human_review(
-            "E003", "webcam", "  ", tickets=SqliteTicketStore(log), now=NOW
+            "E003", "webcam", "  ", data=data, tickets=SqliteTicketStore(log), now=NOW
         ) == {"error": "reason_required"}
         assert not log.exists()
 
-    def test_blank_request_is_rejected_and_not_written(self, tmp_path):
+    def test_blank_request_is_rejected_and_not_written(self, tmp_path, data):
         log = tmp_path / "tickets.sqlite3"
         assert flag_for_human_review(
-            "E003", "", "why", tickets=SqliteTicketStore(log), now=NOW
+            "E003", "", "why", data=data, tickets=SqliteTicketStore(log), now=NOW
         ) == {"error": "request_required"}
         assert not log.exists()
 
