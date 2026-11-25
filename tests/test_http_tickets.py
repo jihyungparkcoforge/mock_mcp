@@ -5,6 +5,7 @@ import sqlite3
 from threading import Barrier
 
 import httpx2
+import pytest
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -13,7 +14,8 @@ from equipment_mcp.repositories import MemoryEquipmentData, MemoryTicketStore, S
 from equipment_mcp.server import create_server
 
 
-def test_concurrent_http_sessions_allocate_and_reuse_tickets(tmp_path):
+@pytest.fixture
+def concurrent_http_tickets(tmp_path):
     path = tmp_path / "tickets.sqlite3"
     server = create_server(
         MemoryEquipmentData({"employees": {"E001": {}}}), SqliteTicketStore(path)
@@ -53,18 +55,35 @@ def test_concurrent_http_sessions_allocate_and_reuse_tickets(tmp_path):
     async def run():
         async with asyncio.timeout(30), server.session_manager.run():
             different = await batch([f"request-{i}" for i in range(20)])
-            assert len({t["ticket_id"] for t in different}) == 20
             retries = await batch(["request-0"] * 20)
-            assert all(t == different[0] for t in retries)
+            return different, retries
 
-    asyncio.run(run())
+    different, retries = asyncio.run(run())
+    return different, retries, path
+
+
+def test_concurrent_http_sessions_allocate_distinct_tickets(concurrent_http_tickets):
+    different, _, _ = concurrent_http_tickets
+    assert len({t["ticket_id"] for t in different}) == 20
+
+
+def test_concurrent_http_retries_return_original_ticket(concurrent_http_tickets):
+    different, retries, _ = concurrent_http_tickets
+    assert retries == [different[0]] * 20
+
+
+def test_concurrent_http_retries_do_not_add_database_rows(concurrent_http_tickets):
+    _, _, path = concurrent_http_tickets
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 20
 
 
-def test_independent_reads_overlap_on_one_http_session():
+@pytest.fixture
+def overlapping_http_reads():
     barrier = Barrier(3)
 
+    # Keep the HTTP stack real; gate in-memory reads to prove that independent
+    # calls overlap without introducing disk latency or timing-based assertions.
     class ConcurrentData(MemoryEquipmentData):
         def read(self, table):
             # All three MCP calls must reach the server before any can finish.
@@ -99,8 +118,17 @@ def test_independent_reads_overlap_on_one_http_session():
                             tools.call("check_inventory", {"item": "monitor"}),
                             tools.call("get_department_budget", {"department": "Finance"}),
                         )
-                        assert catalog["price"] == 120
-                        assert inventory["in_stock"] == 2
-                        assert budget["remaining"] == 800
+                        return catalog, inventory, budget
 
-    asyncio.run(run())
+    return asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "index,field,expected",
+    [(0, "price", 120), (1, "in_stock", 2), (2, "remaining", 800)],
+    ids=["catalog", "inventory", "budget"],
+)
+def test_independent_reads_overlap_on_one_http_session(
+    overlapping_http_reads, index, field, expected
+):
+    assert overlapping_http_reads[index][field] == expected

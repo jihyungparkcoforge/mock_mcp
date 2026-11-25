@@ -2,9 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
-from equipment_mcp.models import EquipmentRequest
+from equipment_mcp.models import DecisionContext, EquipmentRequest
+
+
+def validate_submission_input(
+    request: str, employee_id: str, max_steps: int, submission_id: str | None
+) -> None:
+    """Reject invalid submission input before model calls or run state creation."""
+    if not request.strip() or not employee_id.strip() or max_steps < 1:
+        raise ValueError("Request, employee ID and a positive step limit are required")
+    if submission_id is not None and (
+        not isinstance(submission_id, str) or not submission_id.strip()
+    ):
+        raise ValueError("submission_id must be a nonempty string")
 
 
 def validate_requests(request: str, tasks: list[EquipmentRequest]) -> None:
@@ -33,53 +47,67 @@ VALID_DECISIONS = ("approve", "deny", "escalate")
 MAX_REFLECTION_REJECTIONS = 2
 
 
-DECISION_RULES = """Approve only when every one of these holds:
-- the role policy allows the item (eligibility status eligible_new or eligible_refresh)
-- the employee's employment_status is active
-- there is no open request for the same item
-- the item's price is within the auto-approve limit
-- the department's remaining budget covers the price
-- the item is in stock
+def validate_tool_scope(arguments: dict[str, Any], context: DecisionContext) -> None:
+    """Reject supplied identifiers that target another employee or request item."""
+    if (
+        "employee_id" in arguments
+        and arguments["employee_id"].strip().upper() != context.employee_id
+    ):
+        raise ValueError("Tool employee_id does not match the current employee")
+    if "item" in arguments and arguments["item"].strip().lower() != context.task.item:
+        raise ValueError("Tool item does not match the current request")
 
-Deny when any of these holds:
-- eligibility status not_eligible and the request gives no damage or failure reason
-  (give the next eligible date)
-- the employee is leaving
-- an open request for the same item already exists (give its request ID)
-- employee_not_found (ask the employee to confirm their ID)
 
-Escalate when any of these holds:
-- not_eligible but the request says the device is broken, damaged, or not working
-- the item is not in policy or not in the catalog
-- the price is above the auto-approve limit
-- the remaining department budget is below the price
-- the item is out of stock
-- the employee is on leave
-- role_not_found, missing data, or anything the data cannot settle
-
-If both a deny reason and an escalate reason apply, deny.
-If the data does not clearly support approve or deny, escalate. Never guess."""
+def review_ticket_arguments(
+    arguments: dict[str, Any], context: DecisionContext, submission_id: str | None
+) -> dict[str, Any]:
+    """Bind a ticket to the original request and a stable host-owned retry key."""
+    task = context.task
+    arguments = dict(arguments)
+    arguments["employee_id"] = context.employee_id
+    arguments["request"] = context.original
+    arguments["idempotency_key"] = hashlib.sha256(
+        json.dumps([submission_id, context.employee_id, task.item], ensure_ascii=False).encode()
+    ).hexdigest()
+    reason = arguments.get("reason")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("Escalation reason is empty")
+    arguments["reason"] = f"[{task.request_id}: {task.item}] {reason}"
+    return arguments
 
 
 def validate_decision(decision: dict[str, Any], created_tickets: list[str]) -> list[str]:
     """Return problems with a submit_decision input (empty list means valid)."""
     result = []
+    outcome = decision.get("decision")
 
-    if decision.get("decision") == "escalate" and decision.get("ticket_id") not in created_tickets:
+    if outcome == "escalate" and decision.get("ticket_id") not in created_tickets:
         result.append("ticket_id is missing")
 
-    if (
-        decision.get("decision") == "approve" or decision.get("decision") == "deny"
-    ) and decision.get("ticket_id"):
+    if outcome in ("approve", "deny") and decision.get("ticket_id"):
         result.append('"approve"/"deny" but a ticket_id is given')
 
     if not isinstance(decision.get("response"), str) or not decision["response"].strip():
         result.append("response is empty/blank")
 
-    if decision.get("decision") not in VALID_DECISIONS:
+    if outcome not in VALID_DECISIONS:
         result.append("unknown decision")
 
     return result
+
+
+def validate_item_decision(
+    decision: dict[str, Any], task: EquipmentRequest, created_tickets: list[str]
+) -> list[str]:
+    """Validate a decision against the current item and its review tickets."""
+    problems = validate_decision(decision, created_tickets)
+    if decision.get("request_id") != task.request_id:
+        problems.append("request_id does not match the current request")
+    if decision.get("item") != task.item:
+        problems.append("item does not match the current request")
+    if created_tickets and decision.get("decision") != "escalate":
+        problems.append("this request already has a review ticket; submit escalate")
+    return problems
 
 
 FACT_TOOLS = {

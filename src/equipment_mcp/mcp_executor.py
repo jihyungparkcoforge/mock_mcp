@@ -17,7 +17,7 @@ class McpToolExecutor:
 
     @property
     def definitions(self) -> list[dict[str, Any]]:
-        return [tool.to_dict() for tool in self._tools.values()]
+        return [tool.to_dict() for tool in self._tools.values()]  # pyright: ignore[reportReturnType]
 
     @classmethod
     async def discover(cls, session):

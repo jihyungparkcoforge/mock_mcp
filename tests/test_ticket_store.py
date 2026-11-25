@@ -22,63 +22,118 @@ def create_ticket(args):
     )
 
 
-@pytest.mark.parametrize("processes", [False, True], ids=["threads", "processes"])
-@pytest.mark.parametrize("same_key", [False, True], ids=["different-requests", "retries"])
-def test_concurrent_writers_share_one_database(tmp_path, processes, same_key):
-    path = tmp_path / "tickets.sqlite3"
-    keys = ["same" if same_key else f"request-{i}" for i in range(20)]
-    pool = (
-        ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn"))
-        if processes
-        else ThreadPoolExecutor(max_workers=20)
-    )
-    with pool:
-        results = list(pool.map(create_ticket, [(str(path), key) for key in keys], timeout=30))
-    expected = 1 if same_key else 20
+@pytest.fixture(params=[False, True], ids=["threads", "processes"])
+def concurrent_writer(request, tmp_path):
+    processes = request.param
+
+    def run(same_key):
+        path = tmp_path / "tickets.sqlite3"
+        keys = ["same" if same_key else f"request-{i}" for i in range(20)]
+        pool = (
+            ProcessPoolExecutor(max_workers=4, mp_context=multiprocessing.get_context("spawn"))
+            if processes
+            else ThreadPoolExecutor(max_workers=20)
+        )
+        with pool:
+            results = list(pool.map(create_ticket, [(str(path), key) for key in keys], timeout=30))
+        return path, results
+
+    return run
+
+
+@pytest.mark.parametrize("same_key,expected", [(False, 20), (True, 1)], ids=["distinct", "retries"])
+def test_concurrent_writers_return_expected_ticket_count(concurrent_writer, same_key, expected):
+    _, results = concurrent_writer(same_key)
     assert len({r["ticket_id"] for r in results}) == expected
+
+
+@pytest.mark.parametrize("same_key,expected", [(False, 20), (True, 1)], ids=["distinct", "retries"])
+def test_concurrent_writers_persist_expected_row_count(concurrent_writer, same_key, expected):
+    path, _ = concurrent_writer(same_key)
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == expected
-    if same_key:
-        assert all(r == results[0] for r in results)
-        # A new store/connection after the first writers finish still returns the same ticket.
-        assert create_ticket((str(path), "same")) == results[0]
 
 
-@pytest.mark.parametrize("storage", ["sqlite", "memory"])
-def test_retry_preserves_first_ticket_and_rejects_key_reuse(tmp_path, storage):
-    store = (
+def test_concurrent_retries_return_identical_payloads(concurrent_writer):
+    _, results = concurrent_writer(True)
+    assert results == [results[0]] * 20
+
+
+def test_retry_from_new_connection_returns_original_ticket(concurrent_writer):
+    path, results = concurrent_writer(True)
+    assert create_ticket((str(path), "same")) == results[0]
+
+
+@pytest.fixture(params=["sqlite", "memory"])
+def ticket_store(request, tmp_path):
+    return (
         SqliteTicketStore(tmp_path / "tickets.sqlite3")
-        if storage == "sqlite"
+        if request.param == "sqlite"
         else MemoryTicketStore()
     )
+
+
+@pytest.fixture
+def original_ticket(ticket_store):
     original = {
         "employee_id": "E001",
         "request": "Laptop",
         "reason": "First",
         "created_at": "first",
     }
-    first = store.append(original, idempotency_key="request-1")
-    retry = store.append(
+    first = ticket_store.append(original, idempotency_key="request-1")
+    return original, first
+
+
+def test_retry_preserves_first_ticket(ticket_store, original_ticket):
+    original, first = original_ticket
+    retry = ticket_store.append(
         {**original, "reason": "Reworded", "created_at": "later"}, idempotency_key="request-1"
     )
     assert retry == first
-    for changes in ({"employee_id": "E002"}, {"request": "Different request"}):
-        with pytest.raises(ValueError, match="different employee or request"):
-            store.append({**original, **changes}, idempotency_key="request-1")
-    second = store.append(original, idempotency_key="request-2")
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"employee_id": "E002"}, {"request": "Different request"}],
+    ids=["different-employee", "different-request"],
+)
+def test_retry_rejects_key_reuse(ticket_store, original_ticket, changes):
+    original, _ = original_ticket
+    with pytest.raises(ValueError, match="different employee or request"):
+        ticket_store.append({**original, **changes}, idempotency_key="request-1")
+
+
+def test_new_key_creates_distinct_ticket(ticket_store, original_ticket):
+    original, first = original_ticket
+    second = ticket_store.append(original, idempotency_key="request-2")
     assert second["ticket_id"] != first["ticket_id"]
 
 
-def test_database_constraints_no_key_and_invalid_input(tmp_path):
+def test_sqlite_construction_is_lazy(tmp_path):
+    path = tmp_path / "tickets.sqlite3"
+    SqliteTicketStore(path)
+    assert not path.exists()
+
+
+def test_blank_key_is_rejected_before_database_creation(tmp_path):
     path = tmp_path / "tickets.sqlite3"
     store = SqliteTicketStore(path)
-    assert not path.exists()
     with pytest.raises(ValueError, match="nonempty"):
         store.append({}, idempotency_key=" ")
     assert not path.exists()
+
+
+def test_missing_key_means_new_operation(tmp_path):
+    store = SqliteTicketStore(tmp_path / "tickets.sqlite3")
     first = store.append({"request": "one"})
     second = store.append({"request": "one"})
-    assert first["ticket_id"] != second["ticket_id"]  # No key means a new operation.
+    assert first["ticket_id"] != second["ticket_id"]
+
+
+def test_database_enforces_unique_idempotency_key(tmp_path):
+    path = tmp_path / "tickets.sqlite3"
+    store = SqliteTicketStore(path)
     store.append({"request": "three"}, idempotency_key="third")
     with sqlite3.connect(path) as connection:
         with pytest.raises(sqlite3.IntegrityError):
