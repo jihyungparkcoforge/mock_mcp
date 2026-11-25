@@ -139,7 +139,9 @@ Case 4 checks the employee's claimed equipment age against the recorded date.
   lowercased. Free-text category mapping and damage interpretation belong to the
   model. Eligibility itself uses only recorded facts and the evaluation date.
 - `flag_for_human_review` rejects blank requests or reasons without writing a ticket.
-  It does not require the employee ID to exist. SQLite allocates ticket IDs inside
+  Unknown or blank employee IDs return `employee_not_found` before any ticket write.
+  The tool checks the normalized ID against the employee repository, independently
+  of the agent's decision. SQLite allocates ticket IDs inside
   transactions; a unique idempotency key deduplicates concurrent retries. The first
   ticket's reason and timestamp are retained. The same key with a different employee
   or original message is rejected.
@@ -339,7 +341,7 @@ repository unless included separately by the owner.
 
 ### 5.3 Current automated checks
 
-Latest local verification (2026-11-24): **138 submission tests passed**;
+Latest local verification (2026-11-25): **145 submission tests passed**;
 `ruff check src tests` passed. Concurrent submissions on one workflow are also
 covered, including isolated item traces, reflections and ticket retry keys.
 This includes thread/process concurrency, retry conflicts, and MCP Streamable HTTP.
@@ -349,7 +351,9 @@ The earlier 128-test suite also passed in a temporary submission-only copy witho
 - Tool tests cover ordinary lookups, unknown keys, normalization, refresh boundaries,
   leap-day anniversaries, missing role policies, oldest-unit selection with distinct
   dates in either order, and returned-policy copy isolation. Ticket tests cover empty
-  fields, sequential IDs, and persisted contents.
+  fields, sequential IDs, and persisted contents. Unknown and blank employee IDs
+  are rejected without creating a database or changing existing tickets; the MCP
+  wrapper is also checked for this behavior.
 - Workflow tests use scripted model responses to exercise approval evidence, denial
   finalization, multiple items, duplicate submissions, isolated tickets and facts,
   budget reservations, rejected drafts and partial failures. Step-limit tests check

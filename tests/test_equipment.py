@@ -60,13 +60,18 @@ def test_business_rules_with_memory_data_and_injected_clock():
     assert equipment.get_open_requests("E001", data=data)["open_requests"] == []
     assert (
         equipment.flag_for_human_review(
-            "e001", "Original\nrequest", "review", tickets=tickets, now=datetime(2026, 11, 23, 10)
+            "e001",
+            "Original\nrequest",
+            "review",
+            data=data,
+            tickets=tickets,
+            now=datetime(2026, 11, 23, 10),
         )["ticket_id"]
         == "ESC-0001"
     )
     assert tickets.tickets[0]["created_at"] == "2026-11-23T10:00:00"
     assert tickets.tickets[0]["request"] == "Original\nrequest"
-    assert equipment.flag_for_human_review("E001", "request", " ", tickets=tickets) == {
+    assert equipment.flag_for_human_review("E001", "request", " ", data=data, tickets=tickets) == {
         "error": "reason_required"
     }
     assert len(tickets.tickets) == 1
@@ -108,3 +113,21 @@ def test_repositories_are_lazy_and_keep_storage_outside_business_logic(tmp_path)
     assert tickets.append({"request": "two"})["ticket_id"] == "ESC-0002"
     with sqlite3.connect(tickets.path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM tickets").fetchone()[0] == 2
+
+
+def test_mcp_ticket_tool_rejects_unknown_employee_without_writing():
+    tickets = MemoryTicketStore()
+    server = create_server(sample_data(), tickets)
+
+    async def run():
+        result = await server.call_tool(
+            "flag_for_human_review",
+            {"employee_id": " e999 ", "request": "Laptop", "reason": "Needs review"},
+        )
+        assert json.loads(result.content[0].text) == {
+            "error": "employee_not_found",
+            "employee_id": "E999",
+        }
+        assert tickets.tickets == []
+
+    asyncio.run(run())

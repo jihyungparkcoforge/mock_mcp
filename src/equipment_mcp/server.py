@@ -128,12 +128,15 @@ def create_server(data: EquipmentData, tickets: TicketStore) -> MCPServer:
 
         Returns:
         - The created review ticket, including its ID and status.
+        - {"error": "employee_not_found"} for an unknown or blank employee ID;
+          no ticket is created.
         """
         return await asyncio.to_thread(
             equipment.flag_for_human_review,
             employee_id,
             request,
             reason,
+            data=data,
             tickets=tickets,
             idempotency_key=idempotency_key,
         )

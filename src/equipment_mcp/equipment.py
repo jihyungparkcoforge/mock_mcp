@@ -203,6 +203,7 @@ def flag_for_human_review(
     request: str,
     reason: str,
     *,
+    data: EquipmentData,
     tickets: TicketStore,
     now: datetime | None = None,
     idempotency_key: str | None = None,
@@ -211,10 +212,13 @@ def flag_for_human_review(
         return {"error": "request_required"}
     if not reason.strip():
         return {"error": "reason_required"}
+    eid = normalize_employee_id(employee_id)
+    if eid not in data.read("employees"):
+        return {"error": "employee_not_found", "employee_id": eid}
     return tickets.append(
         {
             "status": "pending_review",
-            "employee_id": normalize_employee_id(employee_id),
+            "employee_id": eid,
             "request": request,
             "reason": reason,
             "created_at": (now or datetime.now()).isoformat(timespec="seconds"),

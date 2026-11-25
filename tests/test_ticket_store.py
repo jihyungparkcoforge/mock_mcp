@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from equipment_mcp.equipment import flag_for_human_review
-from equipment_mcp.repositories import MemoryTicketStore, SqliteTicketStore
+from equipment_mcp.repositories import MemoryEquipmentData, MemoryTicketStore, SqliteTicketStore
 
 
 def create_ticket(args):
@@ -16,6 +16,7 @@ def create_ticket(args):
         "E001",
         "Original\nrequest",
         "Needs review",
+        data=MemoryEquipmentData({"employees": {"E001": {}}}),
         tickets=SqliteTicketStore(Path(path)),
         idempotency_key=key,
     )
