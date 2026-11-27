@@ -49,6 +49,10 @@ MAX_REFLECTION_REJECTIONS = 2
 
 def validate_tool_scope(arguments: dict[str, Any], context: DecisionContext) -> None:
     """Reject supplied identifiers that target another employee or request item."""
+    if "employee_id" in arguments and not isinstance(arguments["employee_id"], str):
+        raise ValueError("Tool employee_id must be a string")
+    if "item" in arguments and not isinstance(arguments["item"], str):
+        raise ValueError("Tool item must be a string")
     if (
         "employee_id" in arguments
         and arguments["employee_id"].strip().upper() != context.employee_id
