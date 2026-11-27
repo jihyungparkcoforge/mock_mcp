@@ -25,6 +25,9 @@ htmlcov/
 # Local assignment capture runner and evidence
 /local_submission/
 
+# Local assignment PDFs
+/week7lab1*.pdf
+
 # Secrets (Foundry API key etc.)
 .env
 .env.*

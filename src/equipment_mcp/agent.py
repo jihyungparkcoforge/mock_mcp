@@ -63,7 +63,6 @@ async def run_demos() -> None:
     if mismatches:
         print("Mismatched requests:")
         print("\n".join(mismatches))
-    print("Scores decision labels only (approve / deny / escalate).")
     print("=" * 78)
 
 

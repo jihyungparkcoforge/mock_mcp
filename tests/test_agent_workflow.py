@@ -486,6 +486,30 @@ def test_mismatched_calls_do_not_skip_later_turns(mismatched_calls):
     assert client.script == []
 
 
+@pytest.mark.parametrize("field", ["employee_id", "item"])
+@pytest.mark.parametrize("value", [None, 123], ids=["null", "number"])
+def test_invalid_tool_argument_type_is_returned_to_model(field, value):
+    original = "I need a headset."
+    arguments = {"employee_id": "E001", "item": "headset", field: value}
+    invalid = use("check_request_eligibility", **arguments)
+    valid = use("check_request_eligibility", employee_id="E001", item="headset")
+    # Script malformed model output followed by a correction; use the real workflow.
+    engine, client, backend = build(
+        [
+            plan("headset", text=original),
+            ("agent", [invalid]),
+            ("agent", [valid]),
+            ("agent", [submit("r1", "headset")]),
+            review(),
+        ]
+    )
+    asyncio.run(engine.run(original, "E001"))
+    assert client.calls[2][1]["results"] == [
+        ToolResult(invalid.call_id, f"Tool {field} must be a string", True)
+    ]
+    assert backend.calls == [(valid.name, valid.arguments)]
+
+
 @pytest.fixture
 def missing_evidence_review():
     original = "I need a headset and laptop."
